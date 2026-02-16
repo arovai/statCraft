@@ -24,16 +24,16 @@ CLI tool for second-level neuroimaging analysis, supporting group-level comparis
 - **Flexible File Discovery**
   - Pattern-based file matching with glob patterns
   - Participant filtering by subject ID
-  - Works with derivatives from fMRIPrep, SPM, FSL, etc.
+  - Works with derivatives from any first-level analysis
   - Supports BIDS-like and custom file naming
 
 - **Statistical Inference**
-  - Uncorrected thresholding (default p < 0.001)
+  - Uncorrected thresholding
   - FDR (False Discovery Rate) correction
   - FWER (Family-Wise Error Rate) via Bonferroni
   - Permutation-based FWER correction
 
-- **Anatomical Annotation**
+- **Anatomical Annotation of Clusters**
   - Harvard-Oxford atlas (default)
   - AAL, Destrieux, Schaefer atlases
   - Custom atlas support
@@ -58,19 +58,58 @@ pip install -e .
 
 #### Usage Patterns
 
-StatCraft uses flexible pattern matching for file discovery. You can organize your data in two ways:
+StatCraft uses flexible pattern matching for file discovery. The idea is that you point to one or more directories and define filenaming patterns using wildcards, and this define the data on which the second-level analysis will be performed.
 
-**Pattern 1: Dataset with Separate Derivatives (Recommended)**
-```bash
-statcraft <INPUT_DIR> <OUTPUT_DIR> group --derivatives <DERIVATIVES_PATH> [options]
-```
-Use this when you have a dataset root with participants.tsv and processed derivatives (e.g., fMRIPrep output).
+This allows the user to use this tool in a variety of first-level tools without any particular contraints on the output structure.
 
-**Pattern 2: Derivatives-Only Directory**
+Here are the typical usage, depending on the analysis type:
+
+**One-sample t-tests**
+
 ```bash
-statcraft <DERIVATIVES_PATH> <OUTPUT_DIR> group [--participants-file <PATH>] [options]
+statcraft <INPUD_DIR> <OUTPUT_DIR> --analysis-type one-sample --pattern "PATTERN"
 ```
-Use this when analyzing data directly from a derivatives folder. You may need to specify the `--participants-file` path if it's not in the derivatives folder.
+The pipeline will search for files matching `PATTERN` in the `<INPUT_DIR>` (exploring subfolders), perform the one-sample t-test, and save the results in `<OUTPUT_DIR>`.
+
+**Two-sample t-tests**
+
+The logic is similar as above, except that now one must specify two patterns to define the two groups to compare. We can also assign these groups custom names to ease the output filenaming:
+```bash
+statcraft <INPUD_DIR> <OUTPUT_DIR> --analysis-type two-samples --patterns "Group1=PATTERN1 Group2=PATTERN2"
+```
+The strings `Group1` and `Group2` are artitraty and are used in the output filenaming and in the analysis report.
+
+**Paired t-tests**
+
+This case is similar to the two-samples case except that one must provide a key to pair the data across the two groups. We do this by using the `--pair-by` argument:
+```bash
+statcraft <INPUD_DIR> <OUTPUT_DIR> --analysis-type paired --patterns "Group1=PATTERN1 Group2=PATTERN2" --pair-by "sub"
+```
+The pairing is done by using the value given in `--pair-by` using a BIDS-like `key-value` structure: for instance, for `--pair-by "sub"`, files with `sub-001_*` will be paired together.
+*Note:* `--pair-by` is optional, it's default value being `sub`.
+
+**General Linear Model (GLM)**
+
+For GLM analysis one must provide a design matrix. This is done by passing the `--participants-file`, which follows the structure of the `participants.tsv` file in a BIDS directory:
+
+```
+participant_id  sex age (other columns)
+sub-001 F 42  ...
+sub-CTL1 F 93  ...
+sub-abcd M 17  ...
+```
+By default, a design matrix is build using all the columns of this file. If only a subset of columns should be included, this can be achieved using the `--regressors` option. Moreover, columns that should be treated as categorical can be specified with `--categorical-regressors` (dummy-coded in the analysis). Finally, the constrast to compute is defined using the `--contrasts` argument.
+
+Here is a complete example featuring this functionality:
+```bash
+statcraft <INPUT_DIR> <OUTPUT_DIR> --analysis-type glm --participant-files <PATH_TO_PARTICIPANTS.TSV> --regressors sex age IQ --categorical-regressors sex --contrasts age M-F
+```
+In this example: colums `sex`, `age` and `IQ` are used to build the design matrix, with `sex` being treated as a categorical variable, and two contrasts are computed: the effet of `age` as well as the difference between `M` and `F` (assuming those are the labels in original `participants.tsv` file).
+
+*Notes*: 
+- By default, non-categorical variables are z-scored. To control this, one can use `--no-standardize-regressors`, e.g. `--no-standardize-regressors IQ`
+- An intercept is also added in the design matrix. Contrasts using the intercept can be build using the word `mean`, e.g. `--contrats mean`. To remove the interecept, use `--no-intercept` option.
+- Non-trivial constrasts can be build using simple operands, e.g. `--contrasts 0.5*M+0.5*F-mean`
 
 **File Discovery**
 
