@@ -46,7 +46,7 @@ pip install statcraft
 ### From Source
 
 ```bash
-git clone https://github.com/ln2t/StatCraft.git
+git clone https://github.com/arovai/StatCraft.git
 cd StatCraft
 pip install -e .
 ```
@@ -54,7 +54,7 @@ pip install -e .
 ### Development Installation
 
 ```bash
-git clone https://github.com/ln2t/StatCraft.git
+git clone https://github.com/arovai/StatCraft.git
 cd StatCraft
 pip install -e ".[dev]"
 ```
@@ -63,35 +63,64 @@ pip install -e ".[dev]"
 
 ### Command Line Interface
 
+#### Usage Patterns
+
+StatCraft supports two input directory patterns:
+
+**Pattern 1: BIDS Dataset with Separate Derivatives (Recommended)**
 ```bash
-# One-sample t-test
-statcraft /path/to/bids /path/to/output \
-    --derivatives /path/to/derivatives \
+statcraft <BIDS_DIR> <OUTPUT_DIR> group --derivatives <DERIVATIVES_PATH> [options]
+```
+Use this when you have a clear separation between original BIDS data and processed derivatives (e.g., fMRIPrep output).
+
+**Pattern 2: Derivatives-Only Directory**
+```bash
+statcraft <DERIVATIVES_PATH> <OUTPUT_DIR> group [--participants-file <PATH>] [options]
+```
+Use this when analyzing data directly from a derivatives folder without the original BIDS rawdata. You may need to specify the `--participants-file` path if it's not in the derivatives folder.
+
+#### Examples
+
+```bash
+# One-sample t-test (Pattern 1: BIDS + Derivatives)
+statcraft /data/bids /data/output group \
+    --derivatives /data/derivatives/fmriprep \
+    --analysis-type one-sample \
+    --task nback
+
+# One-sample t-test (Pattern 2: Derivatives-Only)
+statcraft /data/derivatives/fmriprep /data/output group \
+    --analysis-type one-sample \
+    --task nback
+
+# Derivatives-only with explicit participants file
+statcraft /data/derivatives/fmriprep /data/output group \
+    --participants-file /data/bids/participants.tsv \
     --analysis-type one-sample \
     --task nback
 
 # Two-sample t-test (group comparison)
-statcraft /path/to/bids /path/to/output \
-    --derivatives /path/to/derivatives \
+statcraft /data/bids /data/output group \
+    --derivatives /data/derivatives/fmriprep \
     --analysis-type two-sample \
     --group-column group
 
 # Paired t-test
-statcraft /path/to/bids /path/to/output \
-    --derivatives /path/to/derivatives \
+statcraft /data/bids /data/output group \
+    --derivatives /data/derivatives/fmriprep \
     --analysis-type paired \
     --pair-by session \
     --condition1 pre \
     --condition2 post
 
 # Using a configuration file
-statcraft /path/to/bids /path/to/output \
-    --derivatives /path/to/derivatives \
+statcraft /data/bids /data/output group \
+    --derivatives /data/derivatives/fmriprep \
     --config config.yaml
 
 # Skip BIDS validation
-statcraft /path/to/bids /path/to/output \
-    --derivatives /path/to/derivatives \
+statcraft /data/bids /data/output group \
+    --derivatives /data/derivatives/fmriprep \
     --analysis-type one-sample \
     --skip-bids-validator
 ```
@@ -343,7 +372,7 @@ If you use StatCraft in your research, please cite:
   title = {StatCraft: Second-Level Neuroimaging Analysis Tool},
   author = {StatCraft Contributors},
   year = {2024},
-  url = {https://github.com/ln2t/StatCraft}
+  url = {https://github.com/arovai/StatCraft}
 }
 ```
 

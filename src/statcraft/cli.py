@@ -49,40 +49,6 @@ class ColoredHelpFormatter(argparse.RawDescriptionHelpFormatter):
         super().start_section(heading)
 
 
-def _validate_bids(bids_dir: str, verbose: int = 0) -> None:
-    """
-    Validate BIDS dataset structure.
-    
-    Parameters
-    ----------
-    bids_dir : str
-        Path to BIDS rawdata directory.
-    verbose : int
-        Verbosity level.
-        
-    Raises
-    ------
-    ValueError
-        If BIDS validation fails.
-    """
-    from statcraft.core.data_loader import DataLoader
-    import tempfile
-    
-    with tempfile.TemporaryDirectory() as tmpdir:
-        loader = DataLoader(
-            bids_dir=bids_dir,
-            derivatives=[bids_dir],
-            output_dir=tmpdir,
-        )
-        
-        # Basic validation: check if participants exist
-        if loader.participants is None or len(loader.participants) == 0:
-            raise ValueError("No participants found in BIDS dataset")
-        
-        if verbose > 0:
-            print(f"  Found {len(loader.participants)} participants")
-
-
 def create_parser() -> argparse.ArgumentParser:
     """Create command-line argument parser."""
 
@@ -115,6 +81,20 @@ def create_parser() -> argparse.ArgumentParser:
 
     epilog = textwrap.dedent(f"""
     {Colors.BOLD}{Colors.GREEN}═══════════════════════════════════════════════════════════════════════════════{Colors.END}
+    {Colors.BOLD}USAGE PATTERNS{Colors.END}
+    {Colors.GREEN}═══════════════════════════════════════════════════════════════════════════════{Colors.END}
+
+    {Colors.BOLD}Pattern 1: BIDS Dataset with Separate Derivatives (Recommended){Colors.END}
+      {Colors.YELLOW}statcraft <BIDS_DIR> <OUTPUT_DIR> group --derivatives <DERIVATIVES_PATH> [options]{Colors.END}
+      Use when you have original BIDS data and processed derivatives (e.g., fMRIPrep output).
+      This ensures proper BIDS validation and metadata handling.
+
+    {Colors.BOLD}Pattern 2: Derivatives-Only Directory{Colors.END}
+      {Colors.YELLOW}statcraft <DERIVATIVES_PATH> <OUTPUT_DIR> group [--participants-file <PATH>] [options]{Colors.END}
+      Use when analyzing data directly from a derivatives folder without original BIDS rawdata.
+      Optionally specify --participants-file if it's not in the derivatives folder.
+
+    {Colors.BOLD}{Colors.GREEN}═══════════════════════════════════════════════════════════════════════════════{Colors.END}
     {Colors.BOLD}EXAMPLES{Colors.END}
     {Colors.GREEN}═══════════════════════════════════════════════════════════════════════════════{Colors.END}
 
@@ -124,75 +104,90 @@ def create_parser() -> argparse.ArgumentParser:
       statcraft --init-config config.yaml
 
       {Colors.YELLOW}# Run analysis with config file{Colors.END}
-      statcraft /data/bids /data/output participant \\
+      statcraft /data/bids /data/output group \\
           --derivatives /data/derivatives/fmriprep --config config.yaml
 
-    {Colors.BOLD}One-Sample Tests:{Colors.END}
+    {Colors.BOLD}One-Sample Tests (Pattern 1: BIDS + Derivatives):{Colors.END}
 
       {Colors.YELLOW}# Process all subjects with default pattern{Colors.END}
-      statcraft /data/bids /data/output participant \\
+      statcraft /data/bids /data/output group \\
           --derivatives /data/derivatives/fmriprep --analysis-type one-sample
 
       {Colors.YELLOW}# Use specific glob pattern for images{Colors.END}
-      statcraft /data/bids /data/output participant \\
+      statcraft /data/bids /data/output group \\
           --derivatives /data/derivatives/fmriprep --analysis-type one-sample --pattern '*gas*cvr*.nii.gz'
 
       {Colors.YELLOW}# Exclude specific images from analysis{Colors.END}
-      statcraft /data/bids /data/output participant \\
+      statcraft /data/bids /data/output group \\
           --derivatives /data/derivatives/fmriprep --analysis-type one-sample --pattern '*cvr*.nii.gz' --exclude '*label-bad*'
+
+    {Colors.BOLD}One-Sample Tests (Pattern 2: Derivatives-Only):{Colors.END}
+
+      {Colors.YELLOW}# Direct derivatives analysis (if has participants.tsv){Colors.END}
+      statcraft /data/derivatives/fmriprep /data/output group \\
+          --analysis-type one-sample
+
+      {Colors.YELLOW}# With explicit participants file{Colors.END}
+      statcraft /data/derivatives/fmriprep /data/output group \\
+          --participants-file /data/bids/participants.tsv \\
+          --analysis-type one-sample
+
+      {Colors.YELLOW}# Derivatives-only with pattern and filters{Colors.END}
+      statcraft /data/derivatives/fmriprep /data/output group \\
+          --analysis-type one-sample --pattern '*cvr*.nii.gz' --task rest
 
     {Colors.BOLD}Group Comparisons (Two-Sample):{Colors.END}
 
       {Colors.YELLOW}# Using group column in participants.tsv{Colors.END}
-      statcraft /data/bids /data/output participant \\
+      statcraft /data/bids /data/output group \\
           --derivatives /data/derivatives/fmriprep --analysis-type two-sample --group-column group
 
       {Colors.YELLOW}# Using sample-specific patterns{Colors.END}
-      statcraft /data/bids /data/output participant \\
+      statcraft /data/bids /data/output group \\
           --derivatives /data/derivatives/fmriprep --analysis-type two-sample \
           --patterns 'GS=*gas*GS*cvr*.nii.gz SSS=*gas*SSS*cvr*.nii.gz' --contrast 'GS-SSS'
 
     {Colors.BOLD}Paired Comparisons:{Colors.END}
 
       {Colors.YELLOW}# Within-subject pairing by subject ID{Colors.END}
-      statcraft /data/bids /data/output participant \\
+      statcraft /data/bids /data/output group \\
           --derivatives /data/derivatives/fmriprep --analysis-type paired --pair-by sub \
           --patterns 'pre=*pre*.nii.gz post=*post*.nii.gz' --contrast 'post-pre'
 
     {Colors.BOLD}General Linear Model (GLM):{Colors.END}
 
       {Colors.YELLOW}# Age effect on connectivity{Colors.END}
-      statcraft /data/bids /data/output participant \\
+      statcraft /data/bids /data/output group \\
           --derivatives /data/derivatives --data-type connectivity \
           --analysis-type glm --regressors age --contrast age --pattern '**/*_connmat.npy'
 
       {Colors.YELLOW}# Sex effect (categorical) controlling for age{Colors.END}
-      statcraft /data/bids /data/output participant \\
+      statcraft /data/bids /data/output group \\
           --derivatives /data/derivatives/fmriprep --analysis-type glm \
           --regressors age sex --categorical-regressors sex --contrast 'sex_M-sex_F'
 
     {Colors.BOLD}BIDS Entity Filtering:{Colors.END}
 
       {Colors.YELLOW}# Process specific participants{Colors.END}
-      statcraft /data/bids /data/output participant \\
+      statcraft /data/bids /data/output group \\
           --derivatives /data/derivatives/fmriprep --analysis-type one-sample --participant-label 01 02 03
 
       {Colors.YELLOW}# Process specific task and session{Colors.END}
-      statcraft /data/bids /data/output participant \\
+      statcraft /data/bids /data/output group \\
           --derivatives /data/derivatives/fmriprep --analysis-type one-sample --task rest --session 01
 
       {Colors.YELLOW}# Filter by template space{Colors.END}
-      statcraft /data/bids /data/output participant \\
+      statcraft /data/bids /data/output group \\
           --derivatives /data/derivatives/fmriprep --analysis-type one-sample --space MNI152NLin2009cAsym
 
     {Colors.BOLD}Advanced Options:{Colors.END}
 
       {Colors.YELLOW}# Enable permutation testing{Colors.END}
-      statcraft /data/bids /data/output participant \\
+      statcraft /data/bids /data/output group \\
           --derivatives /data/derivatives/fmriprep --analysis-type one-sample --permutation
 
       {Colors.YELLOW}# Custom atlas and cluster analysis{Colors.END}
-      statcraft /data/bids /data/output participant \\
+      statcraft /data/bids /data/output group \\
           --derivatives /data/derivatives/fmriprep --analysis-type one-sample \
           --atlas aal --extra-cluster-analysis
 
@@ -200,8 +195,8 @@ def create_parser() -> argparse.ArgumentParser:
     {Colors.BOLD}MORE INFORMATION{Colors.END}
     {Colors.GREEN}═══════════════════════════════════════════════════════════════════════════════{Colors.END}
 
-      Documentation:  https://github.com/ln2t/StatCraft
-      Report Issues:  https://github.com/ln2t/StatCraft/issues
+      Documentation:  https://github.com/arovai/StatCraft
+      Report Issues:  https://github.com/arovai/StatCraft/issues
       Version:        {__version__}
     """)
 
@@ -224,7 +219,9 @@ def create_parser() -> argparse.ArgumentParser:
         "input_dir",
         type=Path,
         metavar="INPUT_DIR",
-        help="Path to the BIDS dataset root directory.",
+        help="Path to BIDS dataset root or derivatives folder. Can be either:\n"
+             "  • BIDS root directory (use with --derivatives for separate derivatives)\n"
+             "  • Derivatives folder directly (optional --participants-file if needed)",
     )
 
     required.add_argument(
@@ -236,9 +233,9 @@ def create_parser() -> argparse.ArgumentParser:
 
     required.add_argument(
         "analysis_level",
-        choices=["participant"],
-        metavar="{participant}",
-        help="Analysis level. Currently only 'participant' is supported.",
+        choices=["group"],
+        metavar="{group}",
+        help="Analysis level. Currently only 'group' is supported.",
     )
 
     # =========================================================================
@@ -298,6 +295,15 @@ def create_parser() -> argparse.ArgumentParser:
         dest="derivatives",
         help="Path to BIDS derivatives folder (e.g., fmriprep output). "
              "Can be specified multiple times.",
+    )
+
+    derivatives.add_argument(
+        "--participants-file",
+        type=Path,
+        metavar="FILE",
+        dest="participants_file",
+        help="Path to participants.tsv file. Use this when INPUT_DIR is directly a derivatives "
+             "folder without participants.tsv. If not provided, will look for participants.tsv in INPUT_DIR.",
     )
 
     # =========================================================================
@@ -360,7 +366,9 @@ def create_parser() -> argparse.ArgumentParser:
         metavar="TYPE",
         choices=["one-sample", "two-sample", "paired", "glm"],
         dest="analysis_type",
-        help="Type of analysis to run.",
+        help="Type of analysis to run. Choices: 'one-sample' (one-sample t-test), "
+             "'two-sample' (group comparison or method comparison), 'paired' (within-subject comparison), "
+             "'glm' (General Linear Model with continuous/categorical regressors).",
     )
 
     analysis.add_argument(
@@ -598,12 +606,7 @@ def create_parser() -> argparse.ArgumentParser:
         help="Disable HTML report generation.",
     )
 
-    processing.add_argument(
-        "--skip-bids-validator",
-        action="store_true",
-        dest="skip_bids_validator",
-        help="Skip BIDS validation of the rawdata folder.",
-    )
+
 
     # =========================================================================
     # CLUSTER ANALYSIS OPTIONS
@@ -705,17 +708,6 @@ def main():
     # Determine input and output directories
     bids_dir = args.input_dir
     output_dir = args.output_dir
-    
-    # Run BIDS validation unless skipped
-    if not args.skip_bids_validator:
-        print("Validating BIDS dataset...")
-        try:
-            _validate_bids(str(bids_dir), args.verbose)
-            print(f"{Colors.GREEN}✓ BIDS validation passed{Colors.END}")
-        except Exception as e:
-            print(f"{Colors.RED}✗ BIDS validation failed: {str(e)}{Colors.END}", file=sys.stderr)
-            print("Use --skip-bids-validator to bypass this check.", file=sys.stderr)
-            sys.exit(1)
 
     # Validate mutual exclusivity of --scaling and --zscore
     if args.scaling and args.zscore:
@@ -916,6 +908,7 @@ def main():
             output_dir=str(output_dir),
             derivatives=[str(d) for d in (args.derivatives or [])],
             config=cfg,
+            participants_file=str(args.participants_file) if args.participants_file else None,
         )
 
         # Determine if we should run connectivity analysis

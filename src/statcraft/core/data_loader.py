@@ -32,11 +32,15 @@ class DataLoader:
     Parameters
     ----------
     bids_dir : str or Path
-        Path to the BIDS rawdata directory (must contain participants.tsv).
+        Path to the BIDS rawdata directory (must contain participants.tsv or use participants_file).
     derivatives : list of str or Path
         List of paths to derivative folders containing images to analyze.
     output_dir : str or Path
         Path to output directory for StatCraft results.
+    participants_file : str or Path, optional
+        Path to a custom participants.tsv file. If not provided, will look for
+        participants.tsv in bids_dir. Useful when bids_dir is directly a
+        derivatives folder without participants.tsv.
     
     Attributes
     ----------
@@ -46,6 +50,8 @@ class DataLoader:
         Paths to derivative folders.
     output_dir : Path
         Output directory for results.
+    participants_file : Path or None
+        Path to custom participants file if provided.
     layout : BIDSLayout
         PyBIDS layout object for data discovery.
     participants : pd.DataFrame
@@ -57,10 +63,12 @@ class DataLoader:
         bids_dir: Union[str, Path],
         derivatives: List[Union[str, Path]],
         output_dir: Union[str, Path],
+        participants_file: Optional[Union[str, Path]] = None,
     ):
         self.bids_dir = Path(bids_dir)
         self.derivatives = [Path(d) for d in derivatives]
         self.output_dir = Path(output_dir)
+        self.participants_file = Path(participants_file) if participants_file else None
         
         # Validate paths
         self._validate_paths()
@@ -82,11 +90,19 @@ class DataLoader:
         if not self.bids_dir.exists():
             raise FileNotFoundError(f"BIDS directory not found: {self.bids_dir}")
         
-        participants_file = self.bids_dir / "participants.tsv"
-        if not participants_file.exists():
-            raise FileNotFoundError(
-                f"participants.tsv not found in BIDS directory: {participants_file}"
-            )
+        # Check for participants.tsv in BIDS dir or use provided participants_file
+        if self.participants_file:
+            if not self.participants_file.exists():
+                raise FileNotFoundError(
+                    f"Participants file not found: {self.participants_file}"
+                )
+        else:
+            participants_file = self.bids_dir / "participants.tsv"
+            if not participants_file.exists():
+                raise FileNotFoundError(
+                    f"participants.tsv not found in BIDS directory: {participants_file}. "
+                    f"Use --participants-file to provide an alternative location."
+                )
         
         for deriv_path in self.derivatives:
             if not deriv_path.exists():
@@ -140,7 +156,12 @@ class DataLoader:
     
     def _load_participants(self) -> pd.DataFrame:
         """Load and validate participants.tsv."""
-        participants_file = self.bids_dir / "participants.tsv"
+        # Use provided participants_file or look in BIDS dir
+        if self.participants_file:
+            participants_file = self.participants_file
+        else:
+            participants_file = self.bids_dir / "participants.tsv"
+        
         df = pd.read_csv(participants_file, sep="\t")
         
         # Ensure participant_id column exists
@@ -150,7 +171,8 @@ class DataLoader:
         # Remove 'sub-' prefix if present for easier matching
         df["subject"] = df["participant_id"].str.replace("sub-", "", regex=False)
         
-        logger.info(f"Loaded participants.tsv with columns: {list(df.columns)}")
+        logger.info(f"Loaded participants.tsv from: {participants_file}")
+        logger.info(f"Columns: {list(df.columns)}")
         return df
     
     def get_images(
@@ -218,9 +240,10 @@ class DataLoader:
         
         if not images:
             if pattern:
-                logger.warning(f"No images found matching pattern '{pattern}' in derivatives directories:")
+                logger.warning(f"No images found matching pattern '{pattern}' in the following directories:")
+                logger.warning(f"  - BIDS directory: {self.bids_dir}")
                 for deriv_path in self.derivatives:
-                    logger.warning(f"  - {deriv_path}")
+                    logger.warning(f"  - Derivatives: {deriv_path}")
                 logger.warning("Hints:")
                 logger.warning("  - Make sure the pattern uses quotes: '*.nii.gz' not *.nii.gz")
                 logger.warning("  - Use '**/' for recursive search: '**/*.nii.gz'")
@@ -311,10 +334,13 @@ class DataLoader:
 
         logger.debug(f"Searching with glob pattern: {pattern}")
 
-        for deriv_path in self.derivatives:
-            logger.debug(f"Searching in: {deriv_path}")
-            matches = list(deriv_path.glob(pattern))
-            logger.debug(f"Found {len(matches)} potential matches in {deriv_path}")
+        # Build list of search directories: bids_dir + all derivatives
+        search_dirs = [self.bids_dir] + self.derivatives
+        
+        for search_path in search_dirs:
+            logger.debug(f"Searching in: {search_path}")
+            matches = list(search_path.glob(pattern))
+            logger.debug(f"Found {len(matches)} potential matches in {search_path}")
 
             for img_path in matches:
                 if not img_path.is_file():

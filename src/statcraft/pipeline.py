@@ -85,6 +85,10 @@ class StatCraftPipeline:
         Paths to derivative folders containing images.
     config : Config, str, Path, or dict, optional
         Configuration (Config object, path to config file, or dict).
+    participants_file : str or Path, optional
+        Path to a custom participants.tsv file. If not provided, will look for
+        participants.tsv in bids_dir. Useful when bids_dir is directly a
+        derivatives folder without participants.tsv.
     
     Attributes
     ----------
@@ -108,10 +112,12 @@ class StatCraftPipeline:
         output_dir: Union[str, Path],
         derivatives: List[Union[str, Path]],
         config: Optional[Union[Config, str, Path, Dict]] = None,
+        participants_file: Optional[Union[str, Path]] = None,
     ):
         self.bids_dir = Path(bids_dir)
         self.output_dir = Path(output_dir)
         self.derivatives = [Path(d) for d in derivatives]
+        self.participants_file = Path(participants_file) if participants_file else None
         
         # Load configuration
         if config is None:
@@ -130,12 +136,15 @@ class StatCraftPipeline:
         logger.info(f"BIDS directory: {self.bids_dir}")
         logger.info(f"Output directory: {self.output_dir}")
         logger.info(f"Derivatives: {self.derivatives}")
+        if self.participants_file:
+            logger.info(f"Participants file: {self.participants_file}")
         
         # Initialize components
         self.data_loader = DataLoader(
             bids_dir=self.bids_dir,
             derivatives=self.derivatives,
             output_dir=self.output_dir,
+            participants_file=self.participants_file,
         )
         
         self.glm: Optional[SecondLevelGLM] = None

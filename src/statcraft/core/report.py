@@ -1013,7 +1013,7 @@ class ReportGenerator:
         <div style="background-color: #f8f9fa; border-left: 4px solid var(--primary-color); padding: 1rem; margin: 1rem 0;">
             <p style="margin: 0; font-family: 'Courier New', monospace; font-size: 0.9rem;">
                 StatCraft: Second-Level Neuroimaging Analysis Tool<br>
-                Available at: <a href="https://github.com/ln2t/StatCraft" target="_blank">https://github.com/ln2t/StatCraft</a>
+                Available at: <a href="https://github.com/arovai/StatCraft" target="_blank">https://github.com/arovai/StatCraft</a>
             </p>
         </div>
         
@@ -1026,7 +1026,7 @@ class ReportGenerator:
         </ul>
         
         <h3>Source Code</h3>
-        <p>The complete source code is available at: <a href="https://github.com/ln2t/StatCraft" target="_blank">https://github.com/ln2t/StatCraft</a></p>
+        <p>The complete source code is available at: <a href="https://github.com/arovai/StatCraft" target="_blank">https://github.com/arovai/StatCraft</a></p>
         """
         self.add_section("Citation", html, "text", level=1)
 
@@ -2022,7 +2022,7 @@ class ReportGenerator:
         return root
     
     def _generate_basic_html(self) -> str:
-        """Generate basic HTML without Jinja2 templates."""
+        """Generate basic HTML without Jinja2 templates (modern theme fallback)."""
         html = f"""
 <!DOCTYPE html>
 <html lang="en">
@@ -2040,7 +2040,7 @@ class ReportGenerator:
         body {{
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             line-height: 1.6;
-            background-color: #f8f9fa;
+            background-color: #ffffff;
             color: #333;
         }}
 
@@ -2051,12 +2051,12 @@ class ReportGenerator:
         }}
 
         header {{
-            background: linear-gradient(135deg, #2c3e50 0%, #3498db 100%);
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
             padding: 2rem;
-            border-radius: 10px;
+            border-radius: 8px;
             margin-bottom: 2rem;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
         }}
 
         header h1 {{
@@ -2066,31 +2066,37 @@ class ReportGenerator:
         }}
 
         .metadata {{
-            color: #ecf0f1;
+            color: rgba(255, 255, 255, 0.95);
             font-size: 1rem;
             opacity: 0.9;
         }}
 
         .section {{
-            background: white;
+            background: #f9f9f9;
             padding: 2rem;
             margin-bottom: 2rem;
-            border-radius: 10px;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+            border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+            transition: all 0.3s ease;
+        }}
+
+        .section:hover {{
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.15);
+            transform: translateY(-2px);
         }}
 
         .section h2 {{
-            color: #2c3e50;
+            color: #2d3748;
             font-size: 1.8rem;
             font-weight: 600;
             margin-bottom: 1.5rem;
             padding-bottom: 0.75rem;
-            border-bottom: 3px solid #3498db;
+            border-bottom: 2px solid #667eea;
         }}
 
         .section h3 {{
-            color: #34495e;
-            font-size: 1.4rem;
+            color: #2d3748;
+            font-size: 1.3rem;
             font-weight: 600;
             margin-top: 1.5rem;
             margin-bottom: 1rem;
@@ -2106,8 +2112,15 @@ class ReportGenerator:
         .summary-card {{
             padding: 1.5rem;
             border-radius: 8px;
-            border-left: 4px solid #3498db;
-            background: #f8f9fa;
+            border-left: 4px solid #667eea;
+            background: #ffffff;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+            transition: all 0.3s ease;
+        }}
+
+        .summary-card:hover {{
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+            transform: translateY(-2px);
         }}
 
         .summary-card.success {{
@@ -2121,41 +2134,55 @@ class ReportGenerator:
         }}
 
         .summary-card.info {{
-            border-left-color: #17a2b8;
-            background: #e8f4f8;
+            border-left-color: #667eea;
+            background: #d1ecf1;
         }}
 
         .summary-card h4 {{
-            color: #2c3e50;
+            color: #2d3748;
             font-size: 0.9rem;
             text-transform: uppercase;
             margin-bottom: 0.5rem;
             font-weight: 600;
+            letter-spacing: 0.5px;
         }}
 
         .summary-card .value {{
-            font-size: 1.8rem;
+            font-size: 2.2rem;
             font-weight: bold;
-            color: #2c3e50;
+            color: #667eea;
         }}
 
         .figure {{
             text-align: center;
             margin: 2rem 0;
+            background: #ffffff;
+            padding: 1.5rem;
+            border-radius: 8px;
         }}
 
         .figure img {{
             max-width: 100%;
             height: auto;
-            border-radius: 8px;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            border-radius: 6px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+            border: 1px solid #e2e8f0;
+            transition: transform 0.3s ease;
+        }}
+
+        .figure img:hover {{
+            transform: scale(1.02);
         }}
 
         .figure-caption {{
-            margin-top: 0.75rem;
-            color: #666;
-            font-style: italic;
-            font-size: 0.95rem;
+            margin-top: 1rem;
+            padding: 0.75rem;
+            background-color: #f9f9f9;
+            border-left: 3px solid #667eea;
+            color: #495057;
+            font-size: 0.9rem;
+            line-height: 1.5;
+            border-radius: 3px;
         }}
 
         .table {{
@@ -2168,7 +2195,7 @@ class ReportGenerator:
         }}
 
         .table thead {{
-            background: linear-gradient(135deg, #2c3e50 0%, #3498db 100%);
+            background: #667eea;
             color: white;
         }}
 
@@ -2183,11 +2210,11 @@ class ReportGenerator:
 
         .table td {{
             padding: 0.9rem 1rem;
-            border-bottom: 1px solid #e9ecef;
+            border-bottom: 1px solid #e2e8f0;
         }}
 
         .table tbody tr:hover {{
-            background-color: #f8f9fa;
+            background-color: #f7fafc;
         }}
 
         .table tbody tr:nth-child(even) {{
@@ -2195,11 +2222,12 @@ class ReportGenerator:
         }}
 
         .info-box {{
-            background: #e8f4f8;
-            border-left: 4px solid #17a2b8;
+            background: #d1ecf1;
+            border-left: 4px solid #667eea;
             padding: 1rem 1.5rem;
             margin: 1.5rem 0;
             border-radius: 4px;
+            color: #0c5460;
         }}
 
         .warning-box {{
@@ -2231,26 +2259,27 @@ class ReportGenerator:
         }}
 
         code {{
-            background: #f4f4f4;
-            padding: 0.2rem 0.4rem;
+            background: #f9f9f9;
+            padding: 0.2rem 0.5rem;
             border-radius: 3px;
             font-family: 'Courier New', monospace;
             font-size: 0.9em;
-            color: #c7254e;
+            color: #667eea;
+            border: 1px solid #e2e8f0;
         }}
 
         .file-list {{
             max-height: 400px;
             overflow-y: auto;
-            background: #f8f9fa;
+            background: #f9f9f9;
             padding: 1rem;
             border-radius: 6px;
-            border: 1px solid #dee2e6;
+            border: 1px solid #e2e8f0;
         }}
 
         .file-list-item {{
             padding: 0.5rem;
-            border-bottom: 1px solid #e9ecef;
+            border-bottom: 1px solid #e2e8f0;
             font-family: 'Courier New', monospace;
             font-size: 0.85rem;
         }}
@@ -2262,9 +2291,25 @@ class ReportGenerator:
         footer {{
             text-align: center;
             padding: 2rem;
-            color: #666;
+            background: #2d3748;
+            color: #ffffff;
             font-size: 0.9rem;
             margin-top: 3rem;
+            border-radius: 8px;
+        }}
+
+        footer p {{
+            margin: 5px 0;
+        }}
+
+        @media (max-width: 768px) {{
+            header h1 {{
+                font-size: 1.8em;
+            }}
+
+            .summary-grid {{
+                grid-template-columns: 1fr;
+            }}
         }}
     </style>
 </head>
@@ -2301,7 +2346,8 @@ class ReportGenerator:
 
         html += """
         <footer>
-            <p>Generated by StatCraft - Second-Level Neuroimaging Analysis</p>
+            <p>&copy; StatCraft - BIDS-based Second-Level Neuroimaging Analysis Tool</p>
+            <p><a href="https://github.com/arovai/StatCraft" style="color: #667eea; text-decoration: none;">Documentation & Source Code</a></p>
         </footer>
     </div>
 </body>
