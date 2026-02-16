@@ -55,13 +55,13 @@ def create_parser() -> argparse.ArgumentParser:
     description = textwrap.dedent(f"""
     {Colors.BOLD}{Colors.GREEN}╔══════════════════════════════════════════════════════════════════════════════╗
     ║                     StatCraft v{__version__:<46}║
-    ║                  BIDS-based Second-Level Analysis Tool                       ║
+    ║                     Second-Level Neuroimaging Analysis                       ║
     ╚══════════════════════════════════════════════════════════════════════════════╝{Colors.END}
 
     {Colors.BOLD}Description:{Colors.END}
-      StatCraft performs second-level neuroimaging analyses on BIDS-compliant datasets.
-      It processes individual-level statistics and applies group-level workflows to
-      produce analysis-ready outputs that conform to BIDS derivative standards.
+      StatCraft performs second-level neuroimaging analyses using flexible pattern 
+      matching for file discovery. It processes individual-level statistics and applies 
+      group-level workflows to produce analysis-ready outputs.
 
     {Colors.BOLD}Supported Analyses:{Colors.END}
       • One-sample t-tests
@@ -71,12 +71,12 @@ def create_parser() -> argparse.ArgumentParser:
       • Connectivity matrix analysis (edge-wise statistics)
 
     {Colors.BOLD}Workflow:{Colors.END}
-      1. Discover input data from BIDS dataset structure
-      2. Validate data integrity and consistency
-      3. Configure analysis parameters
-      4. Execute main processing pipeline
-      5. Generate BIDS-compliant outputs with metadata
-      6. Produce analysis reports and quality metrics
+      1. Discover input data using flexible glob patterns
+      2. Filter participants (optionally using --participant-label)
+      3. Validate data integrity and consistency
+      4. Configure analysis parameters
+      5. Execute main processing pipeline
+      6. Generate outputs with metadata and analysis reports
     """)
 
     epilog = textwrap.dedent(f"""
@@ -84,15 +84,20 @@ def create_parser() -> argparse.ArgumentParser:
     {Colors.BOLD}USAGE PATTERNS{Colors.END}
     {Colors.GREEN}═══════════════════════════════════════════════════════════════════════════════{Colors.END}
 
-    {Colors.BOLD}Pattern 1: BIDS Dataset with Separate Derivatives (Recommended){Colors.END}
-      {Colors.YELLOW}statcraft <BIDS_DIR> <OUTPUT_DIR> group --derivatives <DERIVATIVES_PATH> [options]{Colors.END}
-      Use when you have original BIDS data and processed derivatives (e.g., fMRIPrep output).
-      This ensures proper BIDS validation and metadata handling.
+    {Colors.BOLD}Pattern 1: Dataset with Separate Derivatives (Recommended){Colors.END}
+      {Colors.YELLOW}statcraft <INPUT_DIR> <OUTPUT_DIR> group --derivatives <DERIVATIVES_PATH> [options]{Colors.END}
+      Use when you have a dataset root and processed derivatives (e.g., fMRIPrep output).
+      This ensures proper metadata handling from participants.tsv.
 
     {Colors.BOLD}Pattern 2: Derivatives-Only Directory{Colors.END}
       {Colors.YELLOW}statcraft <DERIVATIVES_PATH> <OUTPUT_DIR> group [--participants-file <PATH>] [options]{Colors.END}
-      Use when analyzing data directly from a derivatives folder without original BIDS rawdata.
+      Use when analyzing data directly from a derivatives folder.
       Optionally specify --participants-file if it's not in the derivatives folder.
+
+    {Colors.BOLD}File Discovery:{Colors.END}
+      All file discovery uses glob patterns with the --pattern argument.
+      Include task, session, space, and other filters directly in your pattern:
+        {Colors.CYAN}--pattern '*task-rest*ses-01*space-MNI152*stat-effect*.nii.gz'{Colors.END}
 
     {Colors.BOLD}{Colors.GREEN}═══════════════════════════════════════════════════════════════════════════════{Colors.END}
     {Colors.BOLD}EXAMPLES{Colors.END}
@@ -104,97 +109,102 @@ def create_parser() -> argparse.ArgumentParser:
       statcraft --init-config config.yaml
 
       {Colors.YELLOW}# Run analysis with config file{Colors.END}
-      statcraft /data/bids /data/output group \\
+      statcraft /data/dataset /data/output group \\
           --derivatives /data/derivatives/fmriprep --config config.yaml
 
-    {Colors.BOLD}One-Sample Tests (Pattern 1: BIDS + Derivatives):{Colors.END}
+    {Colors.BOLD}One-Sample Tests (Pattern 1: Dataset + Derivatives):{Colors.END}
 
-      {Colors.YELLOW}# Process all subjects with default pattern{Colors.END}
-      statcraft /data/bids /data/output group \\
-          --derivatives /data/derivatives/fmriprep --analysis-type one-sample
+      {Colors.YELLOW}# Process all subjects with specific pattern{Colors.END}
+      statcraft /data/dataset /data/output group \\
+          --derivatives /data/derivatives/fmriprep --analysis-type one-sample \\
+          --pattern '*task-rest*space-MNI152*stat-effect*.nii.gz'
 
-      {Colors.YELLOW}# Use specific glob pattern for images{Colors.END}
-      statcraft /data/bids /data/output group \\
-          --derivatives /data/derivatives/fmriprep --analysis-type one-sample --pattern '*gas*cvr*.nii.gz'
+      {Colors.YELLOW}# Use CVR maps with wildcards{Colors.END}
+      statcraft /data/dataset /data/output group \\
+          --derivatives /data/derivatives/cvrmap --analysis-type one-sample \\
+          --pattern '**/*GS*cvr*.nii.gz'
 
       {Colors.YELLOW}# Exclude specific images from analysis{Colors.END}
-      statcraft /data/bids /data/output group \\
-          --derivatives /data/derivatives/fmriprep --analysis-type one-sample --pattern '*cvr*.nii.gz' --exclude '*label-bad*'
+      statcraft /data/dataset /data/output group \\
+          --derivatives /data/derivatives/fmriprep --analysis-type one-sample \\
+          --pattern '*cvr*.nii.gz' --exclude '*label-bad*'
 
     {Colors.BOLD}One-Sample Tests (Pattern 2: Derivatives-Only):{Colors.END}
 
       {Colors.YELLOW}# Direct derivatives analysis (if has participants.tsv){Colors.END}
       statcraft /data/derivatives/fmriprep /data/output group \\
-          --analysis-type one-sample
+          --analysis-type one-sample --pattern '*stat-effect*.nii.gz'
 
       {Colors.YELLOW}# With explicit participants file{Colors.END}
       statcraft /data/derivatives/fmriprep /data/output group \\
-          --participants-file /data/bids/participants.tsv \\
-          --analysis-type one-sample
+          --participants-file /data/rawdata/participants.tsv \\
+          --analysis-type one-sample --pattern '*stat-effect*.nii.gz'
 
-      {Colors.YELLOW}# Derivatives-only with pattern and filters{Colors.END}
-      statcraft /data/derivatives/fmriprep /data/output group \\
-          --analysis-type one-sample --pattern '*cvr*.nii.gz' --task rest
+      {Colors.YELLOW}# Derivatives-only with pattern{Colors.END}
+      statcraft /data/derivatives/fmriprep /data/output group \
+          --analysis-type one-sample --pattern '*cvr*.nii.gz'
 
     {Colors.BOLD}Group Comparisons (Two-Sample):{Colors.END}
 
       {Colors.YELLOW}# Using group column in participants.tsv{Colors.END}
-      statcraft /data/bids /data/output group \\
-          --derivatives /data/derivatives/fmriprep --analysis-type two-sample --group-column group
+      statcraft /data/dataset /data/output group \\
+          --derivatives /data/derivatives/fmriprep --analysis-type two-sample \\
+          --group-column group --pattern '*stat-effect*.nii.gz'
 
       {Colors.YELLOW}# Using sample-specific patterns{Colors.END}
-      statcraft /data/bids /data/output group \\
-          --derivatives /data/derivatives/fmriprep --analysis-type two-sample \
-          --patterns 'GS=*gas*GS*cvr*.nii.gz SSS=*gas*SSS*cvr*.nii.gz' --contrast 'GS-SSS'
+      statcraft /data/dataset /data/output group \\
+          --derivatives /data/derivatives/cvrmap --analysis-type two-sample \
+          --patterns 'GS=**/*GS*cvr*.nii.gz SSS=**/*SSS*cvr*.nii.gz' --contrast 'GS-SSS'
 
     {Colors.BOLD}Paired Comparisons:{Colors.END}
 
-      {Colors.YELLOW}# Within-subject pairing by subject ID{Colors.END}
-      statcraft /data/bids /data/output group \\
+      {Colors.YELLOW}# Within-subject pairing by subject ID with patterns{Colors.END}
+      statcraft /data/dataset /data/output group \\
           --derivatives /data/derivatives/fmriprep --analysis-type paired --pair-by sub \
-          --patterns 'pre=*pre*.nii.gz post=*post*.nii.gz' --contrast 'post-pre'
+          --patterns 'pre=*ses-pre*.nii.gz post=*ses-post*.nii.gz' --contrast 'post-pre'
 
     {Colors.BOLD}General Linear Model (GLM):{Colors.END}
 
       {Colors.YELLOW}# Age effect on connectivity (age is continuous, z-scored){Colors.END}
-      statcraft /data/bids /data/output group \\
+      statcraft /data/dataset /data/output group \\
           --derivatives /data/derivatives --data-type connectivity \
           --analysis-type glm --regressors age --contrast age --pattern '**/*_connmat.npy'
 
       {Colors.YELLOW}# Sex effect (categorical) controlling for age (continuous){Colors.END}
-      statcraft /data/bids /data/output group \\
+      statcraft /data/dataset /data/output group \\
           --derivatives /data/derivatives/fmriprep --analysis-type glm \
-          --regressors age sex --categorical-regressors sex --contrast 'M-F'
+          --regressors age sex --categorical-regressors sex --contrast 'M-F' \\
+          --pattern '*stat-effect*.nii.gz'
 
       {Colors.YELLOW}# Keep age in original units (no z-scoring){Colors.END}
-      statcraft /data/bids /data/output group \\
-          --derivatives /data/derivatives/fmriprep --analysis-type glm \
-          --regressors age sex --no-standardize-regressors age --categorical-regressors sex --contrast 'M-F'
+      statcraft /data/dataset /data/output group \\
+          --derivatives /data/derivatives/fmriprep --analysis-type glm \\
+          --regressors age sex --no-standardize-regressors age \\
+          --categorical-regressors sex --contrast 'M-F' --pattern '*stat-effect*.nii.gz'
 
-    {Colors.BOLD}BIDS Entity Filtering:{Colors.END}
+    {Colors.BOLD}Participant Filtering:{Colors.END}
 
       {Colors.YELLOW}# Process specific participants{Colors.END}
-      statcraft /data/bids /data/output group \\
-          --derivatives /data/derivatives/fmriprep --analysis-type one-sample --participant-label 01 02 03
+      statcraft /data/dataset /data/output group \\
+          --derivatives /data/derivatives/fmriprep --analysis-type one-sample \\
+          --participant-label 01 02 03 --pattern '*stat-effect*.nii.gz'
 
-      {Colors.YELLOW}# Process specific task and session{Colors.END}
-      statcraft /data/bids /data/output group \\
-          --derivatives /data/derivatives/fmriprep --analysis-type one-sample --task rest --session 01
-
-      {Colors.YELLOW}# Filter by template space{Colors.END}
-      statcraft /data/bids /data/output group \\
-          --derivatives /data/derivatives/fmriprep --analysis-type one-sample --space MNI152NLin2009cAsym
+      {Colors.YELLOW}# Process all participants with pattern{Colors.END}
+      statcraft /data/dataset /data/output group \\
+          --derivatives /data/derivatives/fmriprep --analysis-type one-sample \\
+          --pattern '*task-rest*ses-01*.nii.gz'
 
     {Colors.BOLD}Advanced Options:{Colors.END}
 
       {Colors.YELLOW}# Enable permutation testing{Colors.END}
-      statcraft /data/bids /data/output group \\
-          --derivatives /data/derivatives/fmriprep --analysis-type one-sample --permutation
+      statcraft /data/dataset /data/output group \\
+          --derivatives /data/derivatives/fmriprep --analysis-type one-sample \\
+          --pattern '*stat-effect*.nii.gz' --permutation
 
       {Colors.YELLOW}# Custom atlas and cluster analysis{Colors.END}
-      statcraft /data/bids /data/output group \\
-          --derivatives /data/derivatives/fmriprep --analysis-type one-sample \
-          --atlas aal --extra-cluster-analysis
+      statcraft /data/dataset /data/output group \\
+          --derivatives /data/derivatives/fmriprep --analysis-type one-sample \\
+          --pattern '*stat-effect*.nii.gz' --atlas aal --extra-cluster-analysis
 
     {Colors.BOLD}{Colors.GREEN}═══════════════════════════════════════════════════════════════════════════════{Colors.END}
     {Colors.BOLD}MORE INFORMATION{Colors.END}
@@ -224,8 +234,8 @@ def create_parser() -> argparse.ArgumentParser:
         "input_dir",
         type=Path,
         metavar="INPUT_DIR",
-        help="Path to BIDS dataset root or derivatives folder. Can be either:\n"
-             "  • BIDS root directory (use with --derivatives for separate derivatives)\n"
+        help="Path to dataset root or derivatives folder. Can be either:\n"
+             "  • Dataset root directory (use with --derivatives for separate derivatives)\n"
              "  • Derivatives folder directly (optional --participants-file if needed)",
     )
 
@@ -312,11 +322,11 @@ def create_parser() -> argparse.ArgumentParser:
     )
 
     # =========================================================================
-    # BIDS ENTITY FILTERS
+    # PARTICIPANT FILTERING
     # =========================================================================
     filters = parser.add_argument_group(
-        f'{Colors.BOLD}BIDS Entity Filters{Colors.END}',
-        "Filter which data to process based on BIDS entities."
+        f'{Colors.BOLD}Participant Filtering{Colors.END}',
+        "Filter which participants to include in the analysis."
     )
 
     filters.add_argument(
@@ -324,39 +334,9 @@ def create_parser() -> argparse.ArgumentParser:
         metavar="LABEL",
         dest="participant_label",
         nargs='+',
-        help="Process one or more participants (without 'sub-' prefix).",
-    )
-
-    filters.add_argument(
-        "-t", "--task",
-        metavar="TASK",
-        help="Process only this task (without 'task-' prefix).",
-    )
-
-    filters.add_argument(
-        "-s", "--session",
-        metavar="SESSION",
-        help="Process only this session (without 'ses-' prefix).",
-    )
-
-    filters.add_argument(
-        "-r", "--run",
-        metavar="RUN",
-        type=int,
-        help="Process only this run number.",
-    )
-
-    filters.add_argument(
-        "--space",
-        metavar="SPACE",
-        help="Process only data in this template space "
-             "(e.g., 'MNI152NLin2009cAsym').",
-    )
-
-    filters.add_argument(
-        "--label",
-        metavar="STRING",
-        help="Custom label added to all output filenames (BIDS entity).",
+        help="Process one or more participants (without 'sub-' prefix). "
+             "If not specified, all participants found will be included. "
+             "Use glob patterns for other filtering (e.g., '*task-rest*' in --pattern).",
     )
 
     # =========================================================================
@@ -796,10 +776,7 @@ def main():
             print(f"{Colors.YELLOW}⚠ Warning: Using scaling without key. Consider using 'key=pattern' format{Colors.END}", file=sys.stderr)
             print(f"   Example: --scaling 'brain={args.scaling}'", file=sys.stderr)
 
-    # Warn if --task/--session/--participant-label are used with --pattern
-    if args.pattern and (args.task or args.session or args.participant_label):
-        print(f"{Colors.YELLOW}⚠ Warning: When using --pattern, BIDS filters are applied AFTER pattern matching.{Colors.END}", file=sys.stderr)
-        print("   It's better to include filters directly in the pattern.", file=sys.stderr)
+    # Note: No warning needed - pattern matching is the primary method now
 
     # Build configuration from CLI options
     config_overrides = {}
@@ -809,15 +786,9 @@ def main():
     if args.contrast:
         config_overrides["contrast"] = args.contrast
 
-    # BIDS filters should be nested under bids_filters key
-    if args.task or args.session or args.participant_label:
-        config_overrides["bids_filters"] = {}
-        if args.task:
-            config_overrides["bids_filters"]["task"] = args.task
-        if args.session:
-            config_overrides["bids_filters"]["session"] = args.session
-        if args.participant_label:
-            config_overrides["bids_filters"]["participant"] = list(args.participant_label)
+    # Participant filter
+    if args.participant_label:
+        config_overrides["participant_label"] = list(args.participant_label)
     
     # Design matrix with regressors (for GLM)
     if args.regressors:

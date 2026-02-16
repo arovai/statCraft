@@ -192,7 +192,7 @@ class StatCraftPipeline:
     
     def load_data(
         self,
-        bids_filters: Optional[Dict] = None,
+        participant_label: Optional[List[str]] = None,
         pattern: Optional[str] = None,
         exclude_pattern: Optional[str] = None,
     ) -> List[Dict]:
@@ -201,8 +201,8 @@ class StatCraftPipeline:
 
         Parameters
         ----------
-        bids_filters : dict, optional
-            BIDS entity filters. Uses config if not provided.
+        participant_label : list of str, optional
+            List of participant labels to include. Uses config if not provided.
         pattern : str, optional
             Glob pattern for finding files.
         exclude_pattern : str, optional
@@ -215,11 +215,9 @@ class StatCraftPipeline:
         """
         logger.info("Loading data...")
 
-        # Use config filters if not provided
-        if bids_filters is None:
-            bids_filters = self.config.get("bids_filters", {})
-            # Remove None values
-            bids_filters = {k: v for k, v in bids_filters.items() if v is not None}
+        # Use config participant_label if not provided
+        if participant_label is None:
+            participant_label = self.config.get("participant_label")
 
         if pattern is None:
             pattern = self.config.get("file_pattern")
@@ -229,7 +227,7 @@ class StatCraftPipeline:
 
         # Get images
         images = self.data_loader.get_images(
-            bids_filters=bids_filters,
+            participant_label=participant_label,
             pattern=pattern,
             exclude_pattern=exclude_pattern,
         )
@@ -357,7 +355,7 @@ class StatCraftPipeline:
 
     def load_connectivity_data(
         self,
-        bids_filters: Optional[Dict] = None,
+        participant_label: Optional[List[str]] = None,
         pattern: Optional[str] = None,
         exclude_pattern: Optional[str] = None,
     ) -> List[Dict]:
@@ -366,8 +364,8 @@ class StatCraftPipeline:
 
         Parameters
         ----------
-        bids_filters : dict, optional
-            BIDS entity filters.
+        participant_label : list of str, optional
+            List of participant labels to include.
         pattern : str, optional
             Glob pattern for finding files.
         exclude_pattern : str, optional
@@ -380,10 +378,9 @@ class StatCraftPipeline:
         """
         logger.info("Loading connectivity data...")
 
-        # Use config filters if not provided
-        if bids_filters is None:
-            bids_filters = self.config.get("bids_filters", {})
-            bids_filters = {k: v for k, v in bids_filters.items() if v is not None}
+        # Use config participant_label if not provided
+        if participant_label is None:
+            participant_label = self.config.get("participant_label")
 
         if pattern is None:
             pattern = self.config.get("file_pattern", "**/*.npy")
@@ -393,7 +390,7 @@ class StatCraftPipeline:
 
         # Get .npy files
         images = self.data_loader.get_images(
-            bids_filters=bids_filters,
+            participant_label=participant_label,
             pattern=pattern,
             exclude_pattern=exclude_pattern,
             extension=".npy",
@@ -1579,16 +1576,12 @@ class StatCraftPipeline:
         if config_dict.get('zscore'):
             cmd_parts.append("--zscore")
 
-        # Add BIDS filters
-        bids_filters = config_dict.get('bids_filters', {})
-        if bids_filters.get('task'):
-            cmd_parts.append(f"--task {bids_filters['task']}")
-        if bids_filters.get('session'):
-            cmd_parts.append(f"--session {bids_filters['session']}")
-        if bids_filters.get('subject'):
-            subjects = bids_filters['subject'] if isinstance(bids_filters['subject'], list) else [bids_filters['subject']]
-            for subj in subjects:
-                cmd_parts.append(f"--subject {subj}")
+        # Add participant filter
+        participant_label = config_dict.get('participant_label')
+        if participant_label:
+            labels = participant_label if isinstance(participant_label, list) else [participant_label]
+            for label in labels:
+                cmd_parts.append(f"--participant-label {label}")
 
         # Add group comparison options
         if config_dict.get('group_comparison', {}).get('group_column'):
@@ -1798,11 +1791,9 @@ class StatCraftPipeline:
         if hasattr(self, '_runtime_zscore') and self._runtime_zscore:
             config_dict['zscore'] = self._runtime_zscore
 
-        if hasattr(self, '_runtime_bids_filters') and self._runtime_bids_filters is not None:
-            # Merge runtime BIDS filters with config BIDS filters
-            if 'bids_filters' not in config_dict:
-                config_dict['bids_filters'] = {}
-            config_dict['bids_filters'].update(self._runtime_bids_filters)
+        if hasattr(self, '_runtime_participant_label') and self._runtime_participant_label is not None:
+            # Use runtime participant_label
+            config_dict['participant_label'] = self._runtime_participant_label
 
         # Generate equivalent CLI command
         cli_cmd = self._generate_cli_command(config_dict)
@@ -3428,7 +3419,7 @@ class StatCraftPipeline:
 
     def run(
         self,
-        bids_filters: Optional[Dict] = None,
+        participant_label: Optional[List[str]] = None,
         pattern: Optional[str] = None,
         exclude_pattern: Optional[Union[str, Dict[str, str]]] = None,
         sample_patterns: Optional[Dict[str, str]] = None,
@@ -3442,8 +3433,8 @@ class StatCraftPipeline:
 
         Parameters
         ----------
-        bids_filters : dict, optional
-            BIDS entity filters.
+        participant_label : list of str, optional
+            List of participant labels to include (without 'sub-' prefix).
         pattern : str, optional
             Glob pattern for finding files (for one-sample tests).
         exclude_pattern : str or dict, optional
@@ -3465,7 +3456,7 @@ class StatCraftPipeline:
         mask : str, optional
             Brain mask pattern for z-scoring. Required when zscore=True.
             Format: '/path/to/fmriprep/sub-*/*/*brain*mask.nii.gz'.
-            Uses BIDS entity matching to find the correct mask for each image.
+            Uses entity matching to find the correct mask for each image.
 
         Returns
         -------
@@ -3546,7 +3537,7 @@ class StatCraftPipeline:
 
         # Standard single-pattern pipeline
         # Step 1: Load data
-        self.load_data(bids_filters=bids_filters, pattern=pattern, exclude_pattern=exclude_pattern)
+        self.load_data(participant_label=participant_label, pattern=pattern, exclude_pattern=exclude_pattern)
 
         # Store original images before normalization (for saving unscaled versions)
         self._original_valid_images = self._images.copy() if hasattr(self, '_images') else None
@@ -3623,7 +3614,7 @@ class StatCraftPipeline:
 
     def run_connectivity_analysis(
         self,
-        bids_filters: Optional[Dict] = None,
+        participant_label: Optional[List[str]] = None,
         pattern: Optional[str] = None,
         exclude_pattern: Optional[str] = None,
         sample_patterns: Optional[Dict[str, str]] = None,
@@ -3636,8 +3627,8 @@ class StatCraftPipeline:
 
         Parameters
         ----------
-        bids_filters : dict, optional
-            BIDS entity filters.
+        participant_label : list of str, optional
+            List of participant labels to include.
         pattern : str, optional
             Glob pattern for finding .npy files (default: '**/*.npy').
         exclude_pattern : str, optional
@@ -3660,7 +3651,7 @@ class StatCraftPipeline:
 
         # Load connectivity data
         self.load_connectivity_data(
-            bids_filters=bids_filters,
+            participant_label=participant_label,
             pattern=pattern,
             exclude_pattern=exclude_pattern,
         )
