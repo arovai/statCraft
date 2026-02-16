@@ -1136,9 +1136,12 @@ class ReportGenerator:
         """Plot design matrix and return base64-encoded figure."""
         fig, ax = plt.subplots(figsize=(10, max(4, len(design_matrix) * 0.2)))
         
+        # Ensure all columns are numeric for visualization
+        design_matrix_numeric = design_matrix.astype(float)
+        
         # Plot design matrix
         sns.heatmap(
-            design_matrix,
+            design_matrix_numeric,
             cmap="RdBu_r",
             center=0,
             ax=ax,

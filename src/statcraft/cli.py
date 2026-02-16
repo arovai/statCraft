@@ -156,15 +156,20 @@ def create_parser() -> argparse.ArgumentParser:
 
     {Colors.BOLD}General Linear Model (GLM):{Colors.END}
 
-      {Colors.YELLOW}# Age effect on connectivity{Colors.END}
+      {Colors.YELLOW}# Age effect on connectivity (age is continuous, z-scored){Colors.END}
       statcraft /data/bids /data/output group \\
           --derivatives /data/derivatives --data-type connectivity \
           --analysis-type glm --regressors age --contrast age --pattern '**/*_connmat.npy'
 
-      {Colors.YELLOW}# Sex effect (categorical) controlling for age{Colors.END}
+      {Colors.YELLOW}# Sex effect (categorical) controlling for age (continuous){Colors.END}
       statcraft /data/bids /data/output group \\
           --derivatives /data/derivatives/fmriprep --analysis-type glm \
-          --regressors age sex --categorical-regressors sex --contrast 'sex_M-sex_F'
+          --regressors age sex --categorical-regressors sex --contrast 'M-F'
+
+      {Colors.YELLOW}# Keep age in original units (no z-scoring){Colors.END}
+      statcraft /data/bids /data/output group \\
+          --derivatives /data/derivatives/fmriprep --analysis-type glm \
+          --regressors age sex --no-standardize-regressors age --categorical-regressors sex --contrast 'M-F'
 
     {Colors.BOLD}BIDS Entity Filtering:{Colors.END}
 
@@ -384,8 +389,8 @@ def create_parser() -> argparse.ArgumentParser:
     analysis.add_argument(
         "--contrast", "-C",
         metavar="EXPR",
-        help="Contrast expression for the analysis. For GLM: use design matrix column names "
-             "(e.g., 'age'). For comparisons with patterns: use sample names (e.g., 'GS-SSS').",
+        help="Contrast expression for the analysis. For GLM: use design matrix column names (e.g., 'age', 'sex_M-sex_F') "
+             "or original categorical values (e.g., 'M-F'). For comparisons with patterns: use sample names (e.g., 'GS-SSS').",
     )
 
     # =========================================================================
@@ -422,14 +427,7 @@ def create_parser() -> argparse.ArgumentParser:
     # =========================================================================
     design = parser.add_argument_group(
         f'{Colors.BOLD}Design Matrix Options{Colors.END}',
-        "Configure regressors and group comparisons."
-    )
-
-    design.add_argument(
-        "--group-column",
-        metavar="COLUMN",
-        dest="group_column",
-        help="Column name in participants.tsv for group comparison (two-sample test).",
+        "Configure regressors for GLM analysis."
     )
 
     design.add_argument(
@@ -437,7 +435,8 @@ def create_parser() -> argparse.ArgumentParser:
         metavar="COLUMN",
         nargs='+',
         help="Regressor column names from participants.tsv (e.g., age sex IQ). "
-             "Continuous variables are z-scored; categorical variables are dummy-coded.",
+             "All regressors are treated as continuous by default and z-scored. "
+             "Use --categorical-regressors to treat specific columns as categorical (dummy-coded).",
     )
 
     design.add_argument(
@@ -445,14 +444,18 @@ def create_parser() -> argparse.ArgumentParser:
         metavar="COLUMN",
         nargs='+',
         dest="categorical_regressors",
-        help="Columns to treat as categorical (dummy-coded).",
+        help="Columns to treat as categorical (dummy-coded) in GLM. "
+             "Use for columns with non-numerical values (e.g., sex with M/F, treatment with control/drug) "
+             "or to override the default continuous treatment.",
     )
 
     design.add_argument(
         "--no-standardize-regressors",
-        action="store_true",
+        metavar="COLUMN",
+        nargs='+',
         dest="no_standardize_regressors",
-        help="Disable z-scoring of continuous regressors (keep original units).",
+        help="Regressor column names to keep in original units (skip z-scoring). "
+             "Useful for interpretability when coefficients need original scale (e.g., age IQ).",
     )
 
     # =========================================================================
@@ -816,27 +819,25 @@ def main():
         if args.participant_label:
             config_overrides["bids_filters"]["participant"] = list(args.participant_label)
     
-    # Group comparison
-    if args.group_column:
-        config_overrides["group_comparison"] = {"group_column": args.group_column}
-    
-    # Design matrix with regressors
+    # Design matrix with regressors (for GLM)
     if args.regressors:
         config_overrides["design_matrix"] = {
             "columns": list(args.regressors),
             "add_intercept": True,
-            "standardize_continuous": not args.no_standardize_regressors,
+            "standardize_continuous": True,
         }
         if args.categorical_regressors:
             config_overrides["design_matrix"]["categorical_columns"] = list(args.categorical_regressors)
+        if args.no_standardize_regressors:
+            config_overrides["design_matrix"]["no_standardize_columns"] = list(args.no_standardize_regressors)
         
         if args.verbose > 0:
             print(f"Design matrix configuration:")
-            print(f"  Regressors: {', '.join(args.regressors)}")
+            print(f"  Regressors (continuous): {', '.join(args.regressors)}")
             if args.categorical_regressors:
-                print(f"  Categorical: {', '.join(args.categorical_regressors)}")
+                print(f"  Categorical regressors: {', '.join(args.categorical_regressors)}")
             if args.no_standardize_regressors:
-                print(f"  Standardize continuous: disabled")
+                print(f"  No z-scoring applied to: {', '.join(args.no_standardize_regressors)}")
     
     # Paired test
     if args.pair_by:

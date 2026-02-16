@@ -409,8 +409,10 @@ class StatCraftPipeline:
 
         print(f"\nDiscovered {len(images)} connectivity matrix files:")
         print("=" * 80)
-        for i, img in enumerate(images, 1):
-            print(f"  [{i:3d}] {img['path']}")
+        # Prepare display list with limited output for large file counts
+        file_list = [f"[{idx}/{len(images)}] {img['path']}"
+                     for idx, img in enumerate(images, 1)]
+        _print_file_list_limited(file_list, prefix="  ")
         print("=" * 80)
         print()
 
@@ -520,6 +522,7 @@ class StatCraftPipeline:
                     add_intercept=dm_config.get("add_intercept", True),
                     categorical_columns=dm_config.get("categorical_columns"),
                     standardize_continuous=dm_config.get("standardize_continuous", True),
+                    no_standardize_columns=dm_config.get("no_standardize_columns"),
                 )
         
         logger.info(f"Design matrix shape: {self._design_matrix.shape}")
