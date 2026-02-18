@@ -145,6 +145,7 @@ class StatCraftPipeline:
             derivatives=self.derivatives,
             output_dir=self.output_dir,
             participants_file=self.participants_file,
+            analysis_type=self.config.get("analysis_type", "glm"),
         )
         
         self.glm: Optional[SecondLevelGLM] = None
@@ -235,14 +236,14 @@ class StatCraftPipeline:
         if not images:
             raise ValueError("No images found matching the specified criteria")
 
-        # Log discovered files before any processing
-        logger.info(f"Discovered {len(images)} image files:")
-        for i, img in enumerate(images, 1):
-            logger.info(f"  [{i}] {img['path']}")
+        # Log discovered files summary (detailed output via print statement below)
+        logger.info(f"Discovered {len(images)} image files matching criteria")
 
-        # Also output to console/stdout for immediate visibility
+        # Output to console/stdout for immediate visibility with limited file list
         print(f"\nDiscovered {len(images)} image files matching criteria:")
         print("=" * 80)
+        # Prepare display list with limited output for large file counts
+        file_list = []
         for i, img in enumerate(images, 1):
             # Show relevant BIDS entities if available
             entities_str = ""
@@ -257,7 +258,8 @@ class StatCraftPipeline:
                     parts.append(f"task-{entities['task']}")
                 if parts:
                     entities_str = f" ({', '.join(parts)})"
-            print(f"  [{i:3d}] {img['path']}{entities_str}")
+            file_list.append(f"[{i:3d}] {img['path']}{entities_str}")
+        _print_file_list_limited(file_list, prefix="  ")
         print("=" * 80)
         print()
 
@@ -399,10 +401,8 @@ class StatCraftPipeline:
         if not images:
             raise ValueError("No connectivity matrices found matching the specified criteria")
 
-        # Log discovered files
-        logger.info(f"Discovered {len(images)} connectivity matrix files:")
-        for i, img in enumerate(images, 1):
-            logger.info(f"  [{i}] {img['path']}")
+        # Log discovered files summary (detailed output via print statement below)
+        logger.info(f"Discovered {len(images)} connectivity matrix files matching criteria")
 
         print(f"\nDiscovered {len(images)} connectivity matrix files:")
         print("=" * 80)
@@ -465,8 +465,12 @@ class StatCraftPipeline:
         
         analysis_type = self.config.get("analysis_type", "glm")
         
-        # Get participant data
-        participants = self.data_loader.get_participants_for_images(self._images)
+        # Get participant data only if it's required for this analysis type
+        requires_participants = analysis_type in ["glm", "two-sample", "two_sample"]
+        participants = None
+        
+        if requires_participants:
+            participants = self.data_loader.get_participants_for_images(self._images)
         
         self.design_matrix_builder = DesignMatrixBuilder(participants)
         
