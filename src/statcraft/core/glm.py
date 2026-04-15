@@ -58,6 +58,35 @@ class SecondLevelGLM:
         self._images: Optional[List] = None
         self._design_matrix: Optional[pd.DataFrame] = None
     
+    def _get_target_affine(self, img: Union[str, Path, nib.Nifti1Image]) -> Optional[np.ndarray]:
+        """
+        Extract the affine matrix from an image.
+        
+        Used to ensure all images have consistent affines (Nilearn will resample if needed).
+        
+        Parameters
+        ----------
+        img : str, Path, or nibabel.Nifti1Image
+            Image to extract affine from.
+        
+        Returns
+        -------
+        np.ndarray or None
+            Affine matrix (4x4) or None if extraction fails.
+        """
+        try:
+            if isinstance(img, (str, Path)):
+                img_loaded = nib.load(img)
+            else:
+                img_loaded = img
+            
+            affine = img_loaded.affine
+            logger.debug(f"Extracted target affine from image")
+            return affine
+        except Exception as e:
+            logger.warning(f"Could not extract affine from image: {e}")
+            return None
+    
     def fit(
         self,
         images: List[Union[str, Path, nib.Nifti1Image]],
@@ -96,10 +125,17 @@ class SecondLevelGLM:
         logger.info(f"Fitting GLM with {len(images_list)} images")
         logger.info(f"Design matrix columns: {list(design_matrix.columns)}")
         
+        # Extract target_affine from the first image to ensure consistent affines
+        # Nilearn's SecondLevelModel will resample all images to this affine if needed
+        target_affine = self._get_target_affine(images_list[0])
+        if target_affine is not None:
+            logger.info("Using target_affine from first image to enforce consistent affines across all images")
+        
         # Create and fit model
         self.model = SecondLevelModel(
             mask_img=self.mask,
             smoothing_fwhm=self.smoothing_fwhm,
+            target_affine=target_affine,
         )
         
         self.model.fit(images_list, design_matrix=design_matrix)
