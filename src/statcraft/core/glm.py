@@ -103,7 +103,7 @@ class SecondLevelGLM:
         
         # Log the affine mismatch
         logger.warning("Affine mismatch detected across images")
-        print("\nAffine mismatch detected - resampling all images to reference affine (from first image)...")
+        logger.info("Resampling all images to reference affine (from first image)...")
         
         # Resample all images to match the first image's affine and shape
         resampled_images = []
@@ -128,7 +128,6 @@ class SecondLevelGLM:
                     raise
         
         logger.info(f"Resampled {len(resampled_images) - 1} images to match reference affine")
-        print(f"✓ Resampling complete: {len(resampled_images) - 1} image(s) resampled\n")
         return resampled_images
     
     def _get_target_affine(self, img: Union[str, Path, nib.Nifti1Image]) -> Optional[np.ndarray]:
