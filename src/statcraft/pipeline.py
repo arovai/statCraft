@@ -2559,13 +2559,20 @@ class StatCraftPipeline:
         if not np.any(mask_voxels):
             raise ValueError("Mask is empty (no non-zero voxels)")
 
-        mean_val = np.mean(img_data[mask_voxels])
+        masked_values = img_data[mask_voxels]
+        valid_voxels = ~np.isnan(masked_values)
+        used_voxels = masked_values[valid_voxels]
+
+        if used_voxels.size == 0:
+            raise ValueError("Mask region contains no valid voxels after removing NaNs")
+
+        logger.info(f"Mask applied: {used_voxels.size} voxels used after removing NaNs")
+
+        mean_val = np.nanmean(used_voxels)
 
         if mean_val == 0:
             raise ValueError("Mask region has zero mean - cannot scale by zero")
 
-        if np.isnan(mean_val):
-            raise ValueError("Mask region has NaN mean - check mask and image alignment")
 
         # Scale the data
         scaled_data = img_data / mean_val
