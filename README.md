@@ -18,7 +18,7 @@ StatCraft is a BIDS-friendly wrapper around [Nilearn](https://nilearn.github.io/
 - **Multiple Analysis Types**
   - One-sample t-tests
   - Two-sample t-tests (group comparisons)
-  - Paired t-tests (within-subject comparisons)
+  - Paired t-tests (within-subject comparisons), including a generalized mode combining any number of maps with a custom linear combination
   - General Linear Model (GLM) with custom design matrices
 
 - **Flexible File Discovery**
@@ -143,6 +143,32 @@ statcraft /path/to/first_level_fmri_analyzes /path/to/output --analysis-type pai
 Pair by session instead of subject (if you have multiple sessions and want to pair conditions within sessions):
 ```bash
 statcraft /path/to/first_level_fmri_analyzes /path/to/output --analysis-type paired --patterns "pre=*ses-pre*.nii.gz post=*ses-post*.nii.gz" --pair-by "ses"
+```
+
+**Custom linear combination of maps (generalized paired test)**
+
+The paired test can be generalized to combine any number of per-participant maps using a custom linear combination, instead of always computing a simple two-sample difference. Define as many named patterns as needed with `--patterns`, then describe how to combine them with `--combine`:
+```bash
+statcraft <INPUT_DIR> <OUTPUT_DIR> --analysis-type paired --patterns "myMap1=PATTERN1 myMap2=PATTERN2 myMap3=PATTERN3" --combine "myMap1 + 0.5*myMap2 - myMap3"
+```
+The `--combine` expression references the names defined in `--patterns` and supports `+`, `-`, and `coefficient*name` terms (e.g., `0.5*myMap2`). For each participant, the corresponding maps are combined voxel-wise according to this formula, and the resulting per-participant map is brought to a group-level one-sample t-test (exactly like the classic paired test on difference images).
+
+As with the classic paired test, pairing across maps is done using BIDS-like `key-value` entities in filenames (`--pair-by`, default `sub`). Each pattern must resolve to **exactly one** map per participant:
+- If a pattern matches **more than one** file for a given participant, this is an error.
+- If a pattern matches **no** file for a given participant, a warning is issued and that participant is excluded from the analysis.
+
+*Example with 3 maps:*
+```bash
+statcraft /path/to/first_level_fmri_analyzes /path/to/output --analysis-type paired \
+    --patterns "myMap1=*task-a*stat-effect*.nii.gz myMap2=*task-b*stat-effect*.nii.gz myMap3=*task-c*stat-effect*.nii.gz" \
+    --combine "myMap1 + 0.5*myMap2 - myMap3"
+```
+
+*Example with 4 maps:*
+```bash
+statcraft /path/to/first_level_fmri_analyzes /path/to/output --analysis-type paired \
+    --patterns "myMap1=*task-a*stat-effect*.nii.gz myMap2=*task-b*stat-effect*.nii.gz myMap3=*task-c*stat-effect*.nii.gz myMap4=*task-d*stat-effect*.nii.gz" \
+    --combine "myMap1 + myMap2 - myMap3 - myMap4"
 ```
 
 **General Linear Model (GLM)**

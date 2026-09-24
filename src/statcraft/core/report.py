@@ -401,34 +401,49 @@ class ReportGenerator:
 
         # Add paired file information if available
         if paired_info and paired_info.get('pairs'):
+            sample_names = paired_info.get('sample_names') or [paired_info['sample1_name'], paired_info['sample2_name']]
+            combine_expr = paired_info.get('combine')
+
             html += f"""
         <h3>Paired File Mapping</h3>
         <p><strong>Pairing Entity:</strong> {paired_info['pair_by']}</p>
-        <p><strong>Samples:</strong> {paired_info['sample1_name']} vs {paired_info['sample2_name']}</p>
+        <p><strong>Maps:</strong> {', '.join(sample_names)}</p>"""
+
+            if combine_expr:
+                html += f"""
+        <p><strong>Linear Combination:</strong> <code>{combine_expr}</code></p>"""
+
+            html += """
         <div style="max-height: 300px; overflow-y: auto; border: 1px solid #ddd; padding: 10px; background-color: #f9f9f9; margin: 10px 0;">
             <table class="table table-sm table-striped">
                 <thead>
                     <tr>
-                        <th>Pairing</th>
-                        <th>{paired_info['sample1_name']}</th>
-                        <th>{paired_info['sample2_name']}</th>
+                        <th>Pairing</th>"""
+            for name in sample_names:
+                html += f"""
+                        <th>{name}</th>"""
+            html += """
                     </tr>
                 </thead>
                 <tbody>
         """
 
-            # Parse pair information and create compact table
+            # Parse pair information and create compact table (one column per map)
             for pair_str in paired_info['pairs']:
                 lines = pair_str.strip().split('\n')
                 pair_id = lines[0].split(':')[0]  # e.g., "sub=001"
-                sample1_file = lines[1].split(':')[1].strip() if len(lines) > 1 else ""
-                sample2_file = lines[2].split(':')[1].strip() if len(lines) > 2 else ""
+                files = [
+                    lines[i].split(':', 1)[1].strip() if i < len(lines) else ""
+                    for i in range(1, len(sample_names) + 1)
+                ]
 
                 html += f"""
                     <tr>
-                        <td><code>{pair_id}</code></td>
-                        <td><code style="font-size: 0.85em;">{sample1_file}</code></td>
-                        <td><code style="font-size: 0.85em;">{sample2_file}</code></td>
+                        <td><code>{pair_id}</code></td>"""
+                for file_name in files:
+                    html += f"""
+                        <td><code style="font-size: 0.85em;">{file_name}</code></td>"""
+                html += """
                     </tr>
                 """
 
