@@ -171,6 +171,24 @@ statcraft /path/to/first_level_fmri_analyzes /path/to/output --analysis-type pai
     --combine "myMap1 + myMap2 - myMap3 - myMap4"
 ```
 
+*This feature is also fully configurable from a config file*, without needing any of `--patterns`/`--combine`/`--pair-by` on the command line. Simply set `paired_test.sample_patterns` and `paired_test.combine` in your YAML/JSON config (see the [example config with 3 maps](examples/config_paired_combine.yaml)):
+```yaml
+analysis_type: paired
+
+paired_test:
+  pair_by: sub
+  sample_patterns:
+    myMap1: "*task-a*stat-effect*.nii.gz"
+    myMap2: "*task-b*stat-effect*.nii.gz"
+    myMap3: "*task-c*stat-effect*.nii.gz"
+  combine: "myMap1 + 0.5*myMap2 - myMap3"
+```
+then run:
+```bash
+statcraft /path/to/first_level_fmri_analyzes /path/to/output --config config.yaml
+```
+Command-line options (`--patterns`, `--combine`, `--pair-by`, `--exclude`, ...) always take precedence over values loaded from the config file.
+
 **General Linear Model (GLM)**
 
 For GLM analysis one must provide a design matrix. This is done by passing the `--participants-file`, which follows the structure of the `participants.tsv` file in a BIDS directory:

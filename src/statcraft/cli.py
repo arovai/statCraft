@@ -889,17 +889,22 @@ def main():
             print(f"  Intercept: included")
     
     # Paired test
+    # Only include keys explicitly provided on the CLI, so that values already
+    # set in a --config file (e.g., pair_by) aren't clobbered with None when only
+    # one paired-test option (e.g., --combine) is passed on the command line.
     if args.pair_by or args.combine or (args.analysis_type == "paired" and sample_patterns):
-        config_overrides["paired_test"] = {
-            "pair_by": args.pair_by,
-            "condition1": args.condition1,
-            "condition2": args.condition2,
-        }
-        # Add sample patterns if provided
+        paired_test_overrides: Dict[str, Any] = {}
+        if args.pair_by:
+            paired_test_overrides["pair_by"] = args.pair_by
+        if args.condition1:
+            paired_test_overrides["condition1"] = args.condition1
+        if args.condition2:
+            paired_test_overrides["condition2"] = args.condition2
         if sample_patterns:
-            config_overrides["paired_test"]["sample_patterns"] = sample_patterns
+            paired_test_overrides["sample_patterns"] = sample_patterns
         if args.combine:
-            config_overrides["paired_test"]["combine"] = args.combine
+            paired_test_overrides["combine"] = args.combine
+        config_overrides["paired_test"] = paired_test_overrides
 
     # Two-sample test with patterns
     if sample_patterns and args.analysis_type == "two-sample":
