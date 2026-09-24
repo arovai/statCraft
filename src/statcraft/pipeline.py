@@ -2566,7 +2566,11 @@ class StatCraftPipeline:
         if used_voxels.size == 0:
             raise ValueError("Mask region contains no valid voxels after removing NaNs")
 
-        logger.info(f"Mask applied: {used_voxels.size} voxels used after removing NaNs")
+        used_percentage = 100 * used_voxels.size / masked_values.size
+        logger.info(
+            f"Mask applied: {used_voxels.size} voxels used after removing NaNs "
+            f"({used_percentage:.2f}% of masked voxels)"
+        )
 
         mean_val = np.nanmean(used_voxels)
 
