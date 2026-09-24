@@ -7,6 +7,7 @@ second-level neuroimaging analyses on BIDS-compliant datasets.
 
 import argparse
 import logging
+import re
 import sys
 import textwrap
 from pathlib import Path
@@ -177,6 +178,18 @@ def create_parser() -> argparse.ArgumentParser:
           --analysis-type paired \\
           --patterns "pre=*ses-pre*.nii.gz post=*ses-post*.nii.gz" \\
           --pair-by "ses"
+
+      {Colors.YELLOW}# Custom linear combination of 3 maps per participant (generalized paired test){Colors.END}
+      statcraft /path/to/first_level /path/to/output group \\
+          --analysis-type paired \\
+          --patterns "myMap1=PATTERN1 myMap2=PATTERN2 myMap3=PATTERN3" \\
+          --combine "myMap1 + 0.5*myMap2 - myMap3"
+
+      {Colors.YELLOW}# Custom linear combination of 4 maps per participant{Colors.END}
+      statcraft /path/to/first_level /path/to/output group \\
+          --analysis-type paired \\
+          --patterns "myMap1=PATTERN1 myMap2=PATTERN2 myMap3=PATTERN3 myMap4=PATTERN4" \\
+          --combine "myMap1 + myMap2 - myMap3 - myMap4"
 
     {Colors.BOLD}General Linear Model (GLM):{Colors.END}
 
@@ -484,6 +497,21 @@ def create_parser() -> argparse.ArgumentParser:
         help="Second condition for paired comparison.",
     )
 
+    paired.add_argument(
+        "--combine",
+        metavar="EXPR",
+        dest="combine",
+        help="Custom linear combination of maps for a generalized paired analysis. "
+             "Requires --patterns with 2 or more 'Name=pattern' entries; names used in "
+             "the expression must match those pattern names. The resulting per-participant "
+             "combined map is brought to a group-level one-sample t-test. "
+             "Format: 'name1 + 0.5*name2 - name3'. "
+             "Example: --patterns \"myMap1=PATTERN1 myMap2=PATTERN2 myMap3=PATTERN3\" "
+             "--combine \"myMap1 + 0.5*myMap2 - myMap3\". "
+             "Each pattern must resolve to exactly one map per participant: multiple matches "
+             "are an error, no match triggers a warning and excludes that participant.",
+    )
+
     # =========================================================================
     # NORMALIZATION / SCALING OPTIONS
     # =========================================================================
@@ -735,6 +763,25 @@ def main():
             print(f"{Colors.RED}✗ At least two samples required for --patterns{Colors.END}", file=sys.stderr)
             sys.exit(1)
 
+    # Validate --combine usage
+    if args.combine:
+        if args.analysis_type != "paired":
+            print(f"{Colors.RED}✗ Error: --combine requires --analysis-type paired{Colors.END}", file=sys.stderr)
+            sys.exit(1)
+        if not sample_patterns or len(sample_patterns) < 2:
+            print(f"{Colors.RED}✗ Error: --combine requires --patterns with 2 or more 'Name=pattern' entries{Colors.END}", file=sys.stderr)
+            sys.exit(1)
+        # Validate that every name referenced in --combine matches a --patterns name
+        referenced_names = set(re.findall(r'[A-Za-z_]\w*', args.combine))
+        unknown_names = referenced_names - set(sample_patterns.keys())
+        if unknown_names:
+            print(f"{Colors.RED}✗ Error: --combine references unknown name(s): {', '.join(sorted(unknown_names))}{Colors.END}", file=sys.stderr)
+            print(f"   Available names (from --patterns): {', '.join(sample_patterns.keys())}", file=sys.stderr)
+            sys.exit(1)
+    elif sample_patterns and args.analysis_type == "paired" and len(sample_patterns) > 2:
+        print(f"{Colors.RED}✗ Error: Paired analysis with more than 2 --patterns requires --combine{Colors.END}", file=sys.stderr)
+        sys.exit(1)
+
     # Parse exclude patterns when using multi-sample patterns
     exclude_patterns_dict = None
     if sample_patterns and args.exclude:
@@ -842,7 +889,7 @@ def main():
             print(f"  Intercept: included")
     
     # Paired test
-    if args.pair_by:
+    if args.pair_by or args.combine or (args.analysis_type == "paired" and sample_patterns):
         config_overrides["paired_test"] = {
             "pair_by": args.pair_by,
             "condition1": args.condition1,
@@ -851,6 +898,8 @@ def main():
         # Add sample patterns if provided
         if sample_patterns:
             config_overrides["paired_test"]["sample_patterns"] = sample_patterns
+        if args.combine:
+            config_overrides["paired_test"]["combine"] = args.combine
 
     # Two-sample test with patterns
     if sample_patterns and args.analysis_type == "two-sample":

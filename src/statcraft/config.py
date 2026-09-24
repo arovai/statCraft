@@ -58,6 +58,7 @@ DEFAULT_CONFIG = {
         "condition1": None,  # e.g., "pre"
         "condition2": None,  # e.g., "post"
         "sample_patterns": None,  # e.g., {"GS": "*GS*cvr*.nii.gz", "SSS": "*SSS*cvr*.nii.gz"}
+        "combine": None,  # Custom linear combination of sample_patterns, e.g. "myMap1 + 0.5*myMap2 - myMap3"
     },
 
     # Scaling settings
@@ -238,6 +239,20 @@ class Config:
 
             if not has_sample_patterns and not has_conditions:
                 errors.append("paired_test requires either (condition1 and condition2) or sample_patterns")
+
+            # Custom linear combination (generalized paired test) requires sample_patterns
+            if has_sample_patterns:
+                n_patterns = len(paired["sample_patterns"])
+                if n_patterns < 2:
+                    errors.append("paired_test.sample_patterns must contain at least 2 entries")
+                elif n_patterns > 2 and not paired.get("combine"):
+                    errors.append(
+                        "paired_test.sample_patterns has more than 2 entries; "
+                        "paired_test.combine must be specified to define how the maps are combined "
+                        "(e.g., 'myMap1 + 0.5*myMap2 - myMap3')"
+                    )
+            elif paired.get("combine"):
+                errors.append("paired_test.combine requires paired_test.sample_patterns")
 
         # Validate two-sample settings
         if self.data["analysis_type"] == "two-sample":
@@ -632,6 +647,28 @@ paired_test:
   #     Pre: "*session-pre*.nii.gz"
   #     Post: "*session-post*.nii.gz"
   sample_patterns: null
+
+  # METHOD 3: Custom linear combination of N maps (generalized paired test)
+  # Define 2 or more named patterns via sample_patterns, then combine them with
+  # a custom linear combination. The combined per-participant map is brought to a
+  # group-level one-sample t-test. Each pattern must resolve to exactly one map
+  # per participant: multiple matches raise an error, no match raises a warning
+  # and excludes that participant.
+  # CLI equivalent: --combine
+  # Examples:
+  #   sample_patterns:
+  #     myMap1: "*PATTERN1*.nii.gz"
+  #     myMap2: "*PATTERN2*.nii.gz"
+  #     myMap3: "*PATTERN3*.nii.gz"
+  #   combine: "myMap1 + 0.5*myMap2 - myMap3"
+  #
+  #   sample_patterns:
+  #     myMap1: "*PATTERN1*.nii.gz"
+  #     myMap2: "*PATTERN2*.nii.gz"
+  #     myMap3: "*PATTERN3*.nii.gz"
+  #     myMap4: "*PATTERN4*.nii.gz"
+  #   combine: "myMap1 + myMap2 - myMap3 - myMap4"
+  combine: null
 
 # -------------------------------------------------------------------------------
 # NORMALIZATION / SCALING

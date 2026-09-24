@@ -1,0 +1,53 @@
+# Example configuration for a generalized paired analysis using a custom
+# linear combination of an arbitrary number of per-participant maps.
+#
+# Scenario: Each participant has 3 first-level maps (myMap1, myMap2, myMap3)
+# and we want to bring the combination "myMap1 + 0.5*myMap2 - myMap3" to a
+# group-level one-sample t-test.
+
+# Analysis type
+analysis_type: paired
+
+# Participant filtering (optional)
+participant_label: null
+
+# Paired test settings
+paired_test:
+  pair_by: sub  # BIDS entity used to match maps across a participant: "sub" (default), "ses", "run", etc.
+
+  # Define one named pattern per map (2 or more entries).
+  # Each pattern must resolve to exactly one file per participant:
+  #   - multiple matches for a participant is an error
+  #   - no match for a participant triggers a warning and excludes that participant
+  sample_patterns:
+    myMap1: "**/*task-a*space-MNI*stat-effect*.nii.gz"
+    myMap2: "**/*task-b*space-MNI*stat-effect*.nii.gz"
+    myMap3: "**/*task-c*space-MNI*stat-effect*.nii.gz"
+
+  # Custom linear combination of the maps defined above.
+  # Supports '+', '-', and 'coefficient*name' terms.
+  combine: "myMap1 + 0.5*myMap2 - myMap3"
+
+# NOTES:
+# - This is a generalization of the classic 2-map paired test: instead of always
+#   computing "map1 - map2", any number of maps and any linear combination can be
+#   used. The combined per-participant map is brought to a group-level one-sample
+#   t-test, exactly as the classic paired test does with its difference images.
+# - Example with 4 maps and a different combination:
+#     sample_patterns:
+#       myMap1: "**/*task-a*.nii.gz"
+#       myMap2: "**/*task-b*.nii.gz"
+#       myMap3: "**/*task-c*.nii.gz"
+#       myMap4: "**/*task-d*.nii.gz"
+#     combine: "myMap1 + myMap2 - myMap3 - myMap4"
+
+# Statistical inference settings
+inference:
+  alpha_corrected: 0.05
+  alpha_uncorrected: 0.001
+  cluster_threshold: 10
+  two_sided: true
+  corrections:
+    - uncorrected
+    - fdr
+    - bonferroni

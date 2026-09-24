@@ -6,6 +6,7 @@ complete second-level neuroimaging analyses.
 """
 
 import logging
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -1613,6 +1614,8 @@ class StatCraftPipeline:
             cmd_parts.append(f"--condition1 {paired_test['condition1']}")
         if paired_test.get('condition2'):
             cmd_parts.append(f"--condition2 {paired_test['condition2']}")
+        if paired_test.get('combine'):
+            cmd_parts.append(f"--combine \"{paired_test['combine']}\"")
 
         # Add inference settings
         inference = config_dict.get('inference', {})
@@ -2399,6 +2402,62 @@ class StatCraftPipeline:
         # Return the full name if it's an abbreviation, otherwise return as-is
         return entity_mapping.get(entity_key, entity_key)
 
+    @staticmethod
+    def _parse_combine_expression(expr: str, valid_names: List[str]) -> Dict[str, float]:
+        """
+        Parse a linear combination expression into per-map coefficients.
+
+        Supports expressions such as ``"myMap1 + 0.5*myMap2 - myMap3"``.
+
+        Parameters
+        ----------
+        expr : str
+            Linear combination expression referencing names from `valid_names`.
+        valid_names : list of str
+            Allowed map names (i.e., the keys of `sample_patterns`).
+
+        Returns
+        -------
+        dict
+            Mapping of map name -> signed coefficient.
+        """
+        if not expr or not expr.strip():
+            raise ValueError("--combine expression cannot be empty")
+
+        cleaned = expr.replace(" ", "")
+        if cleaned[0] not in "+-":
+            cleaned = "+" + cleaned
+
+        term_pattern = re.compile(r'([+-])(\d*\.?\d*)\*?([A-Za-z_]\w*)')
+        coeffs: Dict[str, float] = {}
+        pos = 0
+        for m in term_pattern.finditer(cleaned):
+            if m.start() != pos:
+                break
+            sign, coeff_str, name = m.groups()
+            if name not in valid_names:
+                raise ValueError(
+                    f"Unknown map name '{name}' in --combine expression '{expr}'. "
+                    f"Available names (from --patterns): {valid_names}"
+                )
+            if name in coeffs:
+                raise ValueError(f"Map name '{name}' used more than once in --combine expression '{expr}'")
+            coeff = float(coeff_str) if coeff_str not in ("", None) else 1.0
+            coeffs[name] = -coeff if sign == "-" else coeff
+            pos = m.end()
+
+        if pos != len(cleaned):
+            raise ValueError(
+                f"Could not parse --combine expression '{expr}' "
+                f"(unparsed remainder: '{cleaned[pos:]}'). "
+                f"Expected format: 'name1 + 0.5*name2 - name3'"
+            )
+
+        if not coeffs:
+            raise ValueError(f"No valid terms found in --combine expression: '{expr}'")
+
+        return coeffs
+
     def _find_mask_for_image(
         self,
         image_info: Dict,
@@ -2930,7 +2989,7 @@ class StatCraftPipeline:
 
         # Get pairing entity
         paired_config = self.config.get("paired_test", {})
-        pair_by_input = paired_config.get("pair_by", "sub")
+        pair_by_input = paired_config.get("pair_by") or "sub"
 
         # Normalize the entity key (e.g., "sub" -> "subject")
         pair_by = self._normalize_bids_entity_key(pair_by_input)
@@ -3224,6 +3283,284 @@ class StatCraftPipeline:
         saved_files = self.save_results()
 
         logger.info("✓ Paired t-test with patterns completed successfully")
+
+        return {
+            "images": self._images,
+            "design_matrix": self._design_matrix,
+            "contrasts": self.design_matrix_builder.contrasts,
+            "glm_results": self.glm.results,
+            "cluster_tables": self.inference.cluster_tables,
+            "saved_files": saved_files,
+        }
+
+    def _run_paired_combine_with_patterns(
+        self,
+        sample_patterns: Dict[str, str],
+        combine_expr: str,
+        exclude_pattern: Optional[Union[str, Dict[str, str]]] = None,
+        scaling: Optional[str] = None,
+        zscore: bool = False,
+        mask: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Run a generalized paired analysis using a custom linear combination of maps.
+
+        For each participant, a custom number of maps (defined via `sample_patterns`)
+        are combined using a user-supplied linear combination (`combine_expr`), and
+        the resulting per-participant map is brought to a group-level one-sample t-test.
+
+        Each pattern must resolve to exactly one map per participant. If several files
+        match a pattern for a given participant, this is an error. If no file matches,
+        a warning is issued and the participant is excluded from the analysis.
+
+        Parameters
+        ----------
+        sample_patterns : dict
+            Dictionary of map_name -> pattern (at least 2 entries).
+        combine_expr : str
+            Linear combination expression, e.g. "myMap1 + 0.5*myMap2 - myMap3".
+            Names must match keys of `sample_patterns`.
+        exclude_pattern : str or dict, optional
+            Pattern to exclude files. Can be a single pattern (applied to all maps)
+            or a dict mapping map names to their exclude patterns.
+        scaling : str, optional
+            Mask pattern or path for data scaling.
+        zscore : bool, optional
+            If True, z-score the data before analysis.
+        mask : str, optional
+            Brain mask pattern for z-scoring.
+
+        Returns
+        -------
+        dict
+            Dictionary with all results.
+        """
+        logger.info("Running paired analysis with custom linear combination of maps...")
+
+        sample_names = list(sample_patterns.keys())
+        if len(sample_names) < 2:
+            raise ValueError(f"--combine requires at least 2 patterns via --patterns, got {len(sample_names)}")
+
+        coeffs = self._parse_combine_expression(combine_expr, sample_names)
+        combo_str = " ".join(f"{'+' if c >= 0 else '-'} {abs(c):g}*{n}" for n, c in coeffs.items())
+        logger.info(f"Linear combination: {combo_str}")
+        print(f"\nLinear combination: {combo_str}")
+
+        # Get pairing entity
+        paired_config = self.config.get("paired_test", {})
+        pair_by_input = paired_config.get("pair_by") or "sub"
+        pair_by = self._normalize_bids_entity_key(pair_by_input)
+        logger.info(f"Pairing by BIDS entity: '{pair_by_input}' (normalized to '{pair_by}')")
+        print(f"Pairing files by BIDS entity: '{pair_by_input}' (normalized to '{pair_by}')")
+        print("=" * 80)
+
+        def _exclude_for(name: str) -> Optional[str]:
+            if isinstance(exclude_pattern, dict):
+                return exclude_pattern.get(name, None)
+            return exclude_pattern
+
+        # Load images for each map and index them by the pairing entity,
+        # ensuring each pattern resolves to exactly one map per participant.
+        images_by_entity: Dict[str, Dict[Any, Dict]] = {}
+        for name in sample_names:
+            exclude = _exclude_for(name)
+            images = self.data_loader.get_images(pattern=sample_patterns[name], exclude_pattern=exclude)
+            logger.info(f"Found {len(images)} images for map '{name}'")
+
+            print(f"\n{name} files ({len(images)}):")
+            print("=" * 80)
+            display = []
+            entity_map: Dict[Any, Dict] = {}
+            for i, img in enumerate(images, 1):
+                entities_str = ""
+                if 'entities' in img:
+                    parts = [f"{k}={v}" for k, v in sorted(img['entities'].items())]
+                    entities_str = f" ({', '.join(parts)})"
+                display.append(f"[{i:3d}] {img['path']}{entities_str}")
+
+                if "entities" not in img or pair_by not in img["entities"]:
+                    logger.warning(f"{name}: Image missing '{pair_by}' entity: {img['path']}")
+                    print(f"  WARNING: {name} image missing '{pair_by}' entity: {img['path']}")
+                    continue
+
+                entity_value = img["entities"][pair_by]
+                if entity_value in entity_map:
+                    raise ValueError(
+                        f"Ambiguous match for map '{name}': multiple files found for "
+                        f"'{pair_by_input}={entity_value}':\n"
+                        f"  - {entity_map[entity_value]['path']}\n"
+                        f"  - {img['path']}\n"
+                        f"Each pattern must resolve to exactly one map per participant."
+                    )
+                entity_map[entity_value] = img
+
+            _print_file_list_limited(display, prefix="  ")
+            print("=" * 80)
+            print()
+
+            images_by_entity[name] = entity_map
+
+        # A participant is only included if every map name resolves to a file
+        all_entities = set()
+        for name in sample_names:
+            all_entities |= set(images_by_entity[name].keys())
+
+        complete_entities = []
+        for entity in sorted(all_entities):
+            missing = [name for name in sample_names if entity not in images_by_entity[name]]
+            if missing:
+                logger.warning(f"Excluding '{pair_by_input}={entity}': missing map(s) {missing}")
+                print(f"  WARNING: Excluding '{pair_by_input}={entity}': missing map(s) {', '.join(missing)}")
+                continue
+            complete_entities.append(entity)
+
+        if not complete_entities:
+            raise ValueError(
+                f"No participants have all required maps ({', '.join(sample_names)}) "
+                f"matched by '{pair_by_input}'"
+            )
+
+        logger.info(f"Found {len(complete_entities)} participants with a complete set of maps")
+        print(f"\nSuccessfully matched {len(complete_entities)} participants with all maps:")
+        print("=" * 80)
+        pair_display = []
+        for entity in complete_entities:
+            lines = [f"    {name}: {Path(images_by_entity[name][entity]['path']).name}" for name in sample_names]
+            pair_display.append(f"{pair_by_input}={entity}:\n" + "\n".join(lines))
+        _print_file_list_limited(pair_display, prefix="  ")
+        print("=" * 80)
+        print()
+
+        # Validate MNI space for all involved images
+        per_entity_images = {
+            entity: [images_by_entity[name][entity] for name in sample_names]
+            for entity in complete_entities
+        }
+        all_images = [img for imgs in per_entity_images.values() for img in imgs]
+        valid_images, invalid_images = self.data_loader.validate_mni_space(all_images)
+
+        if invalid_images:
+            logger.warning(f"Excluded {len(invalid_images)} invalid images")
+
+        self._all_images = all_images
+        self._invalid_images = invalid_images
+
+        self._paired_info = {
+            'pairs': pair_display,
+            'sample1_name': sample_names[0],
+            'sample2_name': sample_names[-1],
+            'pair_by': pair_by_input,
+            'combine': combine_expr,
+            'sample_names': sample_names,
+        }
+
+        # Apply optional scaling/z-scoring per map before combining
+        normalized_by_name: Dict[str, Dict[Any, Any]] = {}
+        if scaling or zscore:
+            print("\nApplying normalization before combining maps...")
+            print("=" * 80)
+            for name in sample_names:
+                imgs_for_name = [images_by_entity[name][entity] for entity in complete_entities]
+                if scaling:
+                    logger.info(f"Scaling '{name}' images...")
+                    print(f"\nScaling '{name}' images:")
+                    normalized_list = self._apply_scaling(imgs_for_name, scaling)
+                else:
+                    if mask is None:
+                        raise ValueError(
+                            "A mask pattern is required for z-scoring. "
+                            "Use --mask with a pattern like '/path/to/fmriprep/sub-*/*/*brain*mask.nii.gz'"
+                        )
+                    logger.info(f"Z-scoring '{name}' images...")
+                    print(f"\nZ-scoring '{name}' images:")
+                    normalized_list = self._apply_zscore(imgs_for_name, mask)
+                normalized_by_name[name] = dict(zip(complete_entities, normalized_list))
+            print("=" * 80)
+            print()
+
+        # Compute the linear combination per participant
+        logger.info("Computing linear combinations...")
+        combined_images = []
+        valid_entities = []
+        for entity in complete_entities:
+            imgs = per_entity_images[entity]
+            if any(img in invalid_images for img in imgs):
+                logger.warning(f"Skipping '{pair_by_input}={entity}': invalid image in MNI space check")
+                continue
+
+            combined_data = None
+            ref_affine = None
+            ref_header = None
+            for name in sample_names:
+                coeff = coeffs[name]
+                img_info = images_by_entity[name][entity]
+                if normalized_by_name:
+                    nii = normalized_by_name[name][entity]
+                else:
+                    nii = nib.load(img_info["path"], mmap=True)
+                data = np.asarray(nii.dataobj, dtype=np.float32) * coeff
+                if combined_data is None:
+                    combined_data = data
+                    ref_affine = nii.affine
+                    ref_header = nii.header
+                else:
+                    combined_data = combined_data + data
+
+            combined_images.append(nib.Nifti1Image(combined_data, ref_affine, ref_header))
+            valid_entities.append(entity)
+
+        logger.info(f"Computed {len(combined_images)} combined images")
+
+        # Store combined images for permutation testing / saving to data/ folder
+        self._diff_images = combined_images
+        self._glm_input_images = combined_images
+        self._original_paired_sample1 = [images_by_entity[sample_names[0]][e] for e in valid_entities]
+        self._original_paired_sample2 = [images_by_entity[sample_names[-1]][e] for e in valid_entities]
+
+        # Store valid images for reporting (all maps, all valid participants)
+        self._images = [images_by_entity[name][e] for e in valid_entities for name in sample_names]
+        self._image_paths = [str(img["path"]) for img in self._images]
+
+        # Contrast name derived from the combine expression (or overridden by config)
+        default_contrast_name = re.sub(r'\s+', '', combine_expr)
+        default_contrast_name = (
+            default_contrast_name.replace('+', '_plus_').replace('-', '_minus_').replace('*', 'x')
+        )
+        contrast_name = self.config.get("contrast", default_contrast_name)
+
+        # Perform one-sample t-test on the combined images
+        logger.info("Performing one-sample t-test on combined images...")
+        smoothing_fwhm = self.config.get("glm", {}).get("smoothing_fwhm", 0)
+        self.glm = SecondLevelGLM(smoothing_fwhm=smoothing_fwhm)
+        self.glm.one_sample_ttest(combined_images, contrast_name=contrast_name)
+
+        # Build a simple design matrix for reporting
+        self._design_matrix = pd.DataFrame({"intercept": np.ones(len(combined_images))})
+
+        from statcraft.core.design_matrix import DesignMatrixBuilder
+        self.design_matrix_builder = DesignMatrixBuilder(self._images)
+        self.design_matrix_builder.contrasts = {contrast_name: np.array([1.0])}
+
+        # Run inference
+        logger.info("Running statistical inference...")
+        self.run_inference()
+
+        # Annotate clusters
+        logger.info("Annotating clusters...")
+        self.annotate_clusters()
+
+        # Generate report
+        output_config = self.config.get("output", {})
+        if output_config.get("generate_report", True):
+            logger.info("Generating report...")
+            report_path = self.generate_report()
+            logger.info(f"Report saved: {report_path}")
+
+        # Save results
+        logger.info("Saving results...")
+        saved_files = self.save_results()
+
+        logger.info("✓ Paired analysis with custom linear combination completed successfully")
 
         return {
             "images": self._images,
@@ -3561,6 +3898,11 @@ class StatCraftPipeline:
         # Check if we're using multi-sample patterns
         if sample_patterns:
             if analysis_type == "paired":
+                combine_expr = self.config.get("paired_test", {}).get("combine")
+                if combine_expr:
+                    return self._run_paired_combine_with_patterns(
+                        sample_patterns, combine_expr, exclude_pattern, scaling, zscore, mask
+                    )
                 return self._run_paired_with_patterns(sample_patterns, exclude_pattern, scaling, zscore, mask)
             elif analysis_type == "two-sample":
                 return self._run_two_sample_with_patterns(sample_patterns, exclude_pattern, scaling, zscore, mask)
