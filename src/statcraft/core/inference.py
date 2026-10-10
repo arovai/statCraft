@@ -76,11 +76,13 @@ class StatisticalInference:
         alpha_uncorrected: float = 0.001,
         cluster_threshold: int = 10,
         two_sided: bool = True,
+        mask: Optional[Union[str, Path, nib.Nifti1Image]] = None,
     ):
         self.alpha_corrected = alpha_corrected
         self.alpha_uncorrected = alpha_uncorrected
         self.cluster_threshold = cluster_threshold
         self.two_sided = two_sided
+        self.mask = mask
 
         self.thresholded_maps: Dict[str, Dict[str, nib.Nifti1Image]] = {}
         self.cluster_tables: Dict[str, Dict[str, pd.DataFrame]] = {}
@@ -194,8 +196,9 @@ class StatisticalInference:
             warnings.filterwarnings('ignore', category=UserWarning, module='nilearn')
             thresholded_map, threshold = threshold_stats_img(
                 stat_map,
+                mask_img=self.mask,
                 alpha=alpha,
-                height_control=None,  # Uncorrected
+                height_control="fpr",  # Convert the requested uncorrected alpha to a z threshold
                 cluster_threshold=self.cluster_threshold,
                 two_sided=self.two_sided,
             )
@@ -262,6 +265,7 @@ class StatisticalInference:
                 warnings.filterwarnings('ignore', category=UserWarning, module='nilearn')
                 thresholded_map, threshold = threshold_stats_img(
                     stat_map,
+                    mask_img=self.mask,
                     alpha=alpha,
                     height_control="fdr",
                     cluster_threshold=self.cluster_threshold,
@@ -333,6 +337,7 @@ class StatisticalInference:
                 warnings.filterwarnings('ignore', category=UserWarning, module='nilearn')
                 thresholded_map, threshold = threshold_stats_img(
                     stat_map,
+                    mask_img=self.mask,
                     alpha=alpha,
                     height_control="bonferroni",
                     cluster_threshold=self.cluster_threshold,
@@ -379,6 +384,7 @@ class StatisticalInference:
         n_jobs: int = 1,
         random_state: Optional[int] = None,
         smoothing_fwhm: Optional[float] = None,
+        mask: Optional[Union[str, Path, nib.Nifti1Image]] = None,
     ) -> Tuple[nib.Nifti1Image, pd.DataFrame, Dict]:
         """
         Apply FWER correction using permutation testing.
@@ -434,6 +440,7 @@ class StatisticalInference:
                 n_jobs=n_jobs,
                 random_state=random_state,
                 smoothing_fwhm=smoothing_fwhm,
+                mask=mask if mask is not None else self.mask,
             )
             
             # Extract results
@@ -458,7 +465,13 @@ class StatisticalInference:
 
                     # Create masker from first image
                     first_img = check_niimg(resampled_images[0])
-                    masker = NiftiMasker(mask_strategy='epi').fit(first_img)
+                    # The diagnostic null distribution must use the same voxel
+                    # family and smoothing as the primary permutation inference.
+                    effective_mask = mask if mask is not None else self.mask
+                    masker = NiftiMasker(
+                        mask_img=effective_mask, mask_strategy='epi',
+                        smoothing_fwhm=smoothing_fwhm,
+                    ).fit(first_img)
 
                     # Transform images to 2D array
                     Y = np.vstack([masker.transform(img) for img in resampled_images])

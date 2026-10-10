@@ -639,7 +639,7 @@ class StatCraftPipeline:
                 logger.info("Only one mask found, using it directly as GLM mask")
             else:
                 # intersect_masks takes a list of mask images and returns their intersection
-                intersection = intersect_masks(mask_images, threshold=0)
+                intersection = intersect_masks(mask_images, threshold=1)
                 logger.info(f"Computed intersection of {len(mask_images)} masks")
                 print(f"  Intersection mask computed successfully")
         except Exception as e:
@@ -674,7 +674,7 @@ class StatCraftPipeline:
         analysis_type = self.config.get("analysis_type", "glm")
 
         # Compute intersection mask from z-scoring masks if no explicit mask provided
-        if mask is None:
+        if mask is None and analysis_type != "paired":
             intersection_mask = self._compute_intersection_mask()
             if intersection_mask is not None:
                 mask = intersection_mask
@@ -713,6 +713,30 @@ class StatCraftPipeline:
                 condition2=paired_config["condition2"],
             )
 
+            candidates = [image for pair in pairs for image in pair]
+            valid, invalid = self.data_loader.validate_mni_space(candidates)
+            valid_paths = {str(Path(image['path']).resolve()) for image in valid}
+            pairs = [pair for pair in pairs if all(
+                str(Path(image['path']).resolve()) in valid_paths for image in pair)]
+            self._invalid_images.extend(invalid)
+            used_paths = {str(Path(image['path']).resolve()) for pair in pairs for image in pair}
+            already_invalid = {str(Path(image['path']).resolve()) for image in self._invalid_images}
+            for image in self._images:
+                path = str(Path(image['path']).resolve())
+                if path not in used_paths and path not in already_invalid:
+                    self._invalid_images.append({**image, "reason": "No complete valid paired condition"})
+            self._images = [image for pair in pairs for image in pair]
+            self._image_paths = [str(image['path']) for image in self._images]
+            self._validate_independent_pairs([pair[0] for pair in pairs])
+            if mask is not None:
+                # A direct API mask has the same role as the CLI inference mask.
+                if isinstance(mask, (str, Path)):
+                    self.config.data['inference_mask'] = str(mask)
+                else:
+                    raise ValueError("For paired inference, provide a mask path or inference_mask config")
+            self._build_paired_inference_mask([image for pair in pairs for image in pair])
+            self.glm.mask = self._inference_mask
+
             images_cond1 = [str(p[0]["path"]) for p in pairs]
             images_cond2 = [str(p[1]["path"]) for p in pairs]
 
@@ -720,17 +744,22 @@ class StatCraftPipeline:
             self._paired_images_cond1 = images_cond1
             self._paired_images_cond2 = images_cond2
 
-            # Store input images for saving to data/ folder
-            self._glm_input_images = images_cond1 + images_cond2
+            # Sanitize shared finite support before computing differences, so NaN
+            # outside the test family cannot spread into it through smoothing.
+            differences = []
+            for first, second in pairs:
+                a = nib.load(first['path'], mmap=True)
+                b = nib.load(second['path'], mmap=True)
+                self._assert_same_grid(a, b, "Paired maps")
+                differences.append(nib.Nifti1Image(
+                    self._prepare_paired_arithmetic(a) - self._prepare_paired_arithmetic(b), a.affine))
+            self._diff_images = differences
+            self._glm_input_images = differences
+            self._design_matrix = pd.DataFrame({'intercept': np.ones(len(differences))})
 
             contrast_name = f"{paired_config['condition1']}_vs_{paired_config['condition2']}"
-            self.glm.paired_ttest(
-                images_cond1,
-                images_cond2,
-                condition1_name=paired_config["condition1"],
-                condition2_name=paired_config["condition2"],
-                contrast_name=contrast_name,
-            )
+            self.glm.one_sample_ttest(differences, contrast_name=contrast_name)
+            self.design_matrix_builder.contrasts = {contrast_name: np.array([1.0])}
         else:
             # Standard GLM fitting
             self.glm.fit(images_to_use, self._design_matrix)
@@ -774,6 +803,7 @@ class StatCraftPipeline:
             alpha_uncorrected=inf_config.get("alpha_uncorrected", 0.001),
             cluster_threshold=inf_config.get("cluster_threshold", 10),
             two_sided=inf_config.get("two_sided", True),
+            mask=self.glm.mask,
         )
         
         if include_permutation is None:
@@ -902,15 +932,13 @@ class StatCraftPipeline:
                         n_jobs=self.config.get("n_jobs", 1),
                         random_state=self.config.get("random_state"),
                         smoothing_fwhm=self.glm.smoothing_fwhm if self.glm else None,
+                        mask=self.glm.mask,
                     )
                     print(f"✓ Permutation test completed successfully")
                     print(f"  Found {len(cluster_table)} significant clusters")
                     print(f"  Results stored with key 'fwer_perm'")
                 except Exception as e:
-                    logger.warning(f"Permutation test failed: {e}")
-                    print(f"✗ Permutation test failed: {e}")
-                    import traceback
-                    print(f"  Traceback: {traceback.format_exc()}")
+                    raise RuntimeError(f"Requested permutation inference failed for {contrast_name}: {e}") from e
         
         logger.info("Statistical inference completed")
         return self.inference
@@ -939,6 +967,13 @@ class StatCraftPipeline:
         
         if atlas is None:
             atlas = self.config.get("atlas", "harvard_oxford")
+
+        if str(atlas).lower() == "none" or not any(
+            len(table) for corrections in self.inference.cluster_tables.values()
+            for table in corrections.values()
+        ):
+            logger.info("Skipping atlas annotation (disabled or no clusters)")
+            return {}
         
         self.annotator = ClusterAnnotator(atlas=atlas)
         
@@ -1609,7 +1644,9 @@ class StatCraftPipeline:
         # Add paired test options
         paired_test = config_dict.get('paired_test', {})
         if paired_test.get('pair_by'):
-            cmd_parts.append(f"--pair-by {paired_test['pair_by']}")
+            value = paired_test['pair_by']
+            value = ",".join(value) if isinstance(value, list) else value
+            cmd_parts.append(f"--pair-by {value}")
         if paired_test.get('condition1'):
             cmd_parts.append(f"--condition1 {paired_test['condition1']}")
         if paired_test.get('condition2'):
@@ -1618,6 +1655,8 @@ class StatCraftPipeline:
             cmd_parts.append(f"--combine \"{paired_test['combine']}\"")
 
         # Add inference settings
+        if config_dict.get('inference_mask'):
+            cmd_parts.append(f"--inference-mask \"{config_dict['inference_mask']}\"")
         inference = config_dict.get('inference', {})
         if inference.get('alpha_corrected') is not None and inference['alpha_corrected'] != 0.05:
             cmd_parts.append(f"--alpha-corrected {inference['alpha_corrected']}")
@@ -1876,6 +1915,16 @@ class StatCraftPipeline:
         maps_dir.mkdir(parents=True, exist_ok=True)
         tables_dir.mkdir(parents=True, exist_ok=True)
         logs_dir.mkdir(parents=True, exist_ok=True)
+
+        if hasattr(self, "_inference_mask"):
+            import json
+            mask_path = maps_dir / f"{bids_prefix}_desc-inference_mask.nii.gz"
+            nib.save(self._inference_mask, mask_path)
+            metadata_path = mask_path.with_suffix("").with_suffix(".json")
+            with metadata_path.open("w") as stream:
+                json.dump(self._inference_mask_metadata, stream, indent=2)
+            saved_files["inference_mask"] = mask_path
+            saved_files["inference_mask_metadata"] = metadata_path
 
         # Check if supplementary data saving is enabled
         save_supp_data = self.config.get("output", {}).get("save_supplementary_data", False)
@@ -2402,6 +2451,84 @@ class StatCraftPipeline:
         # Return the full name if it's an abbreviation, otherwise return as-is
         return entity_mapping.get(entity_key, entity_key)
 
+    def _pairing_keys(self, value) -> List[str]:
+        """Accept a single entity, comma-separated entities, or a YAML list."""
+        values = value.split(",") if isinstance(value, str) else list(value)
+        keys = [self._normalize_bids_entity_key(v.strip()) for v in values]
+        if not all(keys) or len(set(keys)) != len(keys):
+            raise ValueError("--pair-by requires unique, nonempty entity keys")
+        return keys
+
+    @staticmethod
+    def _assert_same_grid(image, reference, label="image"):
+        """Arithmetic and masks require the same 3D sampling grid, without resampling."""
+        if (len(image.shape) != 3 or image.shape != reference.shape or
+                not np.allclose(image.affine, reference.affine, atol=1e-5, rtol=0)):
+            raise ValueError(f"{label}: shape/affine mismatch; resample explicitly upstream")
+
+    @staticmethod
+    def _validate_independent_pairs(representatives):
+        if len(representatives) < 2:
+            raise ValueError("Paired group inference requires at least two complete valid pairs")
+        subjects = [info.get("subject") or info.get("entities", {}).get("subject")
+                    for info in representatives]
+        known = [str(subject) for subject in subjects if subject is not None]
+        if len(known) != len(set(known)):
+            raise ValueError("Repeated observations from the same subject are not independent. "
+                             "Select one session/run or aggregate within subject upstream.")
+
+    def _build_paired_inference_mask(self, images_info):
+        """Intersect finite *input* support and optional explicit anatomical masks.
+
+        Zero input values and zero differences are valid observations. Normalization
+        ROIs never define the multiple-comparison domain.
+        """
+        if not images_info:
+            raise ValueError("No complete valid pairs remain after geometry validation")
+        reference = nib.load(images_info[0]["path"], mmap=True)
+        support = np.ones(reference.shape, dtype=bool)
+        mask_pattern = self.config.get("inference_mask")
+        mask_paths = set()
+        for info in images_info:
+            image = nib.load(info["path"], mmap=True)
+            self._assert_same_grid(image, reference, str(info["path"]))
+            support &= np.isfinite(np.asarray(image.dataobj, dtype=np.float64))
+            if mask_pattern:
+                path = self._find_mask_for_image(info, str(mask_pattern))
+                if path is None:
+                    raise FileNotFoundError(f"No inference mask matches {info['path']}")
+                mask_image = nib.load(path, mmap=True)
+                self._assert_same_grid(mask_image, reference, f"Inference mask {path}")
+                mask_data = np.asarray(mask_image.dataobj, dtype=np.float64)
+                if not np.all(np.isfinite(mask_data)) or np.any(mask_data < 0):
+                    raise ValueError(f"Inference mask must be finite and nonnegative: {path}")
+                support &= mask_data > 0
+                mask_paths.add(str(path.resolve()))
+        if not np.any(support):
+            raise ValueError("Shared finite-support inference mask is empty")
+        if not mask_pattern:
+            logger.warning("No --inference-mask: testing all shared finite input voxels, "
+                           "including zero background. Supply a predetermined brain/ROI mask.")
+        self._inference_mask = nib.Nifti1Image(support.astype(np.uint8), reference.affine)
+        self._inference_mask_metadata = {
+            "Policy": "intersection_of_finite_input_support_and_explicit_masks",
+            "ZeroValuesAreValid": True,
+            "VoxelCount": int(support.sum()),
+            "MaskSources": sorted(mask_paths),
+            "InputSources": [str(Path(info['path']).resolve()) for info in images_info],
+            "NormalizationMasksDefineInference": False,
+        }
+        return self._inference_mask
+
+    def _prepare_paired_arithmetic(self, image):
+        """Remove nonfinite/out-of-domain values before smoothing or fitting."""
+        self._assert_same_grid(image, self._inference_mask)
+        support = np.asarray(self._inference_mask.dataobj, dtype=bool)
+        data = np.asarray(image.dataobj, dtype=np.float64)
+        if not np.all(np.isfinite(data[support])):
+            raise ValueError("Normalization produced nonfinite values inside the inference mask")
+        return np.where(support, data, 0.0)
+
     @staticmethod
     def _parse_combine_expression(expr: str, valid_names: List[str]) -> Dict[str, float]:
         """
@@ -2443,6 +2570,8 @@ class StatCraftPipeline:
             if name in coeffs:
                 raise ValueError(f"Map name '{name}' used more than once in --combine expression '{expr}'")
             coeff = float(coeff_str) if coeff_str not in ("", None) else 1.0
+            if not np.isfinite(coeff):
+                raise ValueError("Linear-combination coefficients must be finite")
             coeffs[name] = -coeff if sign == "-" else coeff
             pos = m.end()
 
@@ -2507,68 +2636,27 @@ class StatCraftPipeline:
             logger.warning(f"No mask found for image {image_info['path'].name} using pattern {mask_pattern}")
             return None
 
-        if len(matches) == 1:
-            # Single match - use it directly
-            logger.debug(f"Found single mask using pattern: {matches[0]}")
-            return Path(matches[0])
-
-        # Multiple masks found - filter by BIDS entities
-        logger.debug(f"Pattern {mask_pattern} matches {len(matches)} files. Filtering by BIDS entities...")
-
-        # Filter matches based on image entities (subject, session, task)
-        # Note: Only enforce entity match if the mask path/name contains that entity type
         filtered_matches = []
-        for match in matches:
-            match_path = Path(match)
-            match_name = match_path.name
-            match_str = str(match_path)
-
-            # Check if this mask matches the image's key entities
-            entity_match = True
-
-            # Check subject - required match (subject should always be present)
-            if 'subject' in entities:
-                subject_str = f"sub-{entities['subject']}"
-                if subject_str not in match_name and subject_str not in match_str:
-                    entity_match = False
-
-            # Check session - only require match if the mask has a session entity
-            # (some masks like fmriprep brain masks may not have session in the path)
-            if entity_match and 'session' in entities:
-                session_str = f"ses-{entities['session']}"
-                # Only filter by session if the mask path contains ANY session indicator
-                if 'ses-' in match_str:
-                    if session_str not in match_name and session_str not in match_str:
-                        entity_match = False
-
-            # Check task - only require match if the mask has a task entity
-            if entity_match and 'task' in entities:
-                task_str = f"task-{entities['task']}"
-                # Only filter by task if the mask path contains ANY task indicator
-                if 'task-' in match_str:
-                    if task_str not in match_name and task_str not in match_str:
-                        entity_match = False
-
-            # Check run - only require match if the mask has a run entity
-            if entity_match and 'run' in entities:
-                run_str = f"run-{entities['run']}"
-                # Only filter by run if the mask path contains ANY run indicator
-                if 'run-' in match_str:
-                    if run_str not in match_name and run_str not in match_str:
-                        entity_match = False
-
-            if entity_match:
+        # Match complete entity values, avoiding e.g. sub-01 matching sub-010.
+        entity_names = {"sub": "subject", "ses": "session", "task": "task", "run": "run",
+                        "space": "space", "res": "resolution", "acq": "acquisition", "echo": "echo"}
+        for match in sorted(matches):
+            mask_entities = {}
+            for abbreviation, key in entity_names.items():
+                values = re.findall(r"(?:^|[/_])" + abbreviation + r"-([^/_]+)", str(match))
+                if values:
+                    mask_entities[key] = values[-1]
+            if all(key not in mask_entities or str(value) == mask_entities[key]
+                   for key, value in entities.items()):
                 filtered_matches.append(match)
 
         if len(filtered_matches) == 1:
             logger.debug(f"Found unique mask after entity filtering: {filtered_matches[0]}")
             return Path(filtered_matches[0])
         elif len(filtered_matches) > 1:
-            logger.warning(
-                f"Multiple masks match image {image_info['path'].name} after filtering: "
-                f"{len(filtered_matches)} matches. Using first: {filtered_matches[0]}"
+            raise ValueError(
+                f"Ambiguous mask for {image_info['path']}: {filtered_matches}. Narrow the mask pattern."
             )
-            return Path(filtered_matches[0])
         else:
             logger.warning(
                 f"Pattern {mask_pattern} matches {len(matches)} files, "
@@ -2611,7 +2699,11 @@ class StatCraftPipeline:
 
         # Get data as float32 to save memory
         img_data = np.asarray(img.dataobj, dtype=np.float32)
-        mask_data = np.asarray(mask_img.dataobj, dtype=bool)
+        StatCraftPipeline._assert_same_grid(mask_img, img, "Normalization mask")
+        mask_values = np.asarray(mask_img.dataobj, dtype=np.float64)
+        if not np.all(np.isfinite(mask_values)) or np.any(mask_values < 0):
+            raise ValueError("Normalization mask must be finite and nonnegative")
+        mask_data = mask_values > 0
 
         # Compute mean within mask
         mask_voxels = mask_data > 0
@@ -2619,7 +2711,7 @@ class StatCraftPipeline:
             raise ValueError("Mask is empty (no non-zero voxels)")
 
         masked_values = img_data[mask_voxels]
-        valid_voxels = ~np.isnan(masked_values)
+        valid_voxels = np.isfinite(masked_values)
         used_voxels = masked_values[valid_voxels]
 
         if used_voxels.size == 0:
@@ -2756,8 +2848,6 @@ class StatCraftPipeline:
             Z-scored images.
         """
         import os
-        import warnings
-        from nilearn.image import resample_to_img
 
         logger.info(f"Applying z-scoring to images using mask pattern: {mask_pattern}")
 
@@ -2792,9 +2882,6 @@ class StatCraftPipeline:
         zscored_images = []
         n_zscored = 0
 
-        # Cache for resampled masks (key: (mask_path, image_shape, image_affine_hash))
-        resampled_mask_cache = {}
-
         for idx, img_info in enumerate(images_info, 1):
             img_path = img_info['path']
             logger.debug(f"Z-scoring image {idx}/{len(images_info)}: {img_path.name}")
@@ -2826,35 +2913,11 @@ class StatCraftPipeline:
                 # Store the mask path used for this image (for saving to outputs)
                 self._zscore_masks_used[str(img_path)] = mask_path_used
 
-                # Check if mask needs resampling (different shape or affine)
-                mask_shape = mask_img.shape[:3]
-                img_shape = img.shape[:3]
-
-                # Create a cache key based on mask path and target shape
-                affine_hash = hash(img.affine.tobytes())
-                cache_key = (mask_path_used, img_shape, affine_hash)
-
-                if mask_shape != img_shape or not np.allclose(mask_img.affine, img.affine):
-                    # Check cache first
-                    if cache_key in resampled_mask_cache:
-                        mask_data = resampled_mask_cache[cache_key]
-                        logger.debug(f"Using cached resampled mask for {img_path.name}")
-                    else:
-                        logger.info(f"    Resampling mask from {mask_shape} to {img_shape}")
-                        # Resample mask to image space using nearest neighbor (for binary masks)
-                        with warnings.catch_warnings():
-                            warnings.filterwarnings('ignore', category=FutureWarning, module='nilearn')
-                            resampled_mask = resample_to_img(
-                                mask_img, img,
-                                interpolation='nearest',
-                                copy_header=True,
-                                force_resample=True
-                            )
-                        mask_data = np.asarray(resampled_mask.dataobj, dtype=bool) > 0
-                        # Cache the resampled mask
-                        resampled_mask_cache[cache_key] = mask_data
-                else:
-                    mask_data = np.asarray(mask_img.dataobj, dtype=bool) > 0
+                self._assert_same_grid(mask_img, img, f"Normalization mask {mask_path_used}")
+                mask_values = np.asarray(mask_img.dataobj, dtype=np.float64)
+                if not np.all(np.isfinite(mask_values)) or np.any(mask_values < 0):
+                    raise ValueError("Normalization mask must be finite and nonnegative")
+                mask_data = mask_values > 0
 
                 # Calculate mean and std only within the brain mask
                 brain_voxels = mask_data > 0
@@ -2862,12 +2925,14 @@ class StatCraftPipeline:
                     raise ValueError(f"Mask is empty for image {img_path.name}")
 
                 brain_data = data[brain_voxels]
-                mean_val = np.nanmean(brain_data)
-                std_val = np.nanstd(brain_data)
+                brain_data = brain_data[np.isfinite(brain_data)]
+                if not brain_data.size:
+                    raise ValueError(f"Normalization mask has no finite data: {img_path.name}")
+                mean_val = np.mean(brain_data)
+                std_val = np.std(brain_data)
 
                 if std_val == 0:
-                    logger.warning(f"Image has zero std within mask: {img_path.name}. Skipping z-scoring (will use zeros).")
-                    zscored_data = np.zeros_like(data)
+                    raise ValueError(f"Zero standard deviation in normalization mask: {img_path.name}")
                 else:
                     # Z-score: (x - mean) / std
                     # Apply to entire image but using mask-based statistics
@@ -2948,10 +3013,12 @@ class StatCraftPipeline:
         # Load images for each sample
         sample1_images = self.data_loader.get_images(
             pattern=sample_patterns[sample1_name],
+            participant_label=getattr(self, '_runtime_participant_label', self.config.get('participant_label')),
             exclude_pattern=exclude1,
         )
         sample2_images = self.data_loader.get_images(
             pattern=sample_patterns[sample2_name],
+            participant_label=getattr(self, '_runtime_participant_label', self.config.get('participant_label')),
             exclude_pattern=exclude2,
         )
 
@@ -2992,7 +3059,7 @@ class StatCraftPipeline:
         pair_by_input = paired_config.get("pair_by") or "sub"
 
         # Normalize the entity key (e.g., "sub" -> "subject")
-        pair_by = self._normalize_bids_entity_key(pair_by_input)
+        pair_by = self._pairing_keys(pair_by_input)
 
         if pair_by_input != "sub":
             logger.info(f"Pairing by BIDS entity: '{pair_by_input}' (normalized to '{pair_by}') [CUSTOM PAIRING]")
@@ -3002,26 +3069,9 @@ class StatCraftPipeline:
             print(f"\nPairing files by BIDS entity: '{pair_by_input}' (normalized to '{pair_by}') [DEFAULT]")
         print("=" * 80)
 
-        # Create pairs based on the pairing entity
-        sample1_by_entity = {}
-        for img in sample1_images:
-            if "entities" in img and pair_by in img["entities"]:
-                entity_value = img["entities"][pair_by]
-                sample1_by_entity[entity_value] = img
-                logger.debug(f"{sample1_name}: {pair_by}={entity_value} -> {img['path']}")
-            else:
-                logger.warning(f"{sample1_name}: Image missing '{pair_by}' entity: {img['path']}")
-                print(f"  WARNING: {sample1_name} image missing '{pair_by}' entity: {img['path']}")
-
-        sample2_by_entity = {}
-        for img in sample2_images:
-            if "entities" in img and pair_by in img["entities"]:
-                entity_value = img["entities"][pair_by]
-                sample2_by_entity[entity_value] = img
-                logger.debug(f"{sample2_name}: {pair_by}={entity_value} -> {img['path']}")
-            else:
-                logger.warning(f"{sample2_name}: Image missing '{pair_by}' entity: {img['path']}")
-                print(f"  WARNING: {sample2_name} image missing '{pair_by}' entity: {img['path']}")
+        # Validate the complete observation key before creating lookup dictionaries.
+        sample1_by_entity = self.data_loader.index_unique_images(sample1_images, pair_by, sample1_name)
+        sample2_by_entity = self.data_loader.index_unique_images(sample2_images, pair_by, sample2_name)
 
         # Find common entities
         sample1_entities = set(sample1_by_entity.keys())
@@ -3078,7 +3128,23 @@ class StatCraftPipeline:
         if invalid_images:
             logger.warning(f"Excluded {len(invalid_images)} invalid images")
 
-        # Store for reporting
+        valid_paths = {str(Path(info["path"]).resolve()) for info in valid_images}
+        kept_pairs = []
+        for first, second in zip(paired_sample1, paired_sample2):
+            if all(str(Path(info["path"]).resolve()) in valid_paths for info in (first, second)):
+                kept_pairs.append((first, second))
+            else:
+                for info in (first, second):
+                    if str(Path(info["path"]).resolve()) in valid_paths:
+                        invalid_images.append({**info, "reason": "Excluded because paired image failed geometry validation"})
+        paired_sample1 = [pair[0] for pair in kept_pairs]
+        paired_sample2 = [pair[1] for pair in kept_pairs]
+        self._validate_independent_pairs(paired_sample1)
+        self._build_paired_inference_mask(paired_sample1 + paired_sample2)
+        pair_display = [f"{Path(first['path']).name} <-> {Path(second['path']).name}"
+                        for first, second in kept_pairs]
+
+        # Store original candidates and whole-pair exclusions for reporting.
         self._all_images = all_images
         self._invalid_images = invalid_images
 
@@ -3192,11 +3258,6 @@ class StatCraftPipeline:
         valid_paired_sample2 = []
 
         for img1, img2 in zip(paired_sample1, paired_sample2):
-            # Check if both images are valid
-            if img1 in invalid_images or img2 in invalid_images:
-                logger.warning(f"Skipping invalid pair: {img1['path']} <-> {img2['path']}")
-                continue
-
             valid_paired_sample1.append(img1)
             valid_paired_sample2.append(img2)
 
@@ -3208,15 +3269,19 @@ class StatCraftPipeline:
                 nii1 = nib.load(img1["path"], mmap=True)
                 nii2 = nib.load(img2["path"], mmap=True)
 
-            # Compute difference in the correct order based on contrast specification
+            self._assert_same_grid(nii1, nii2, "Paired maps")
+            data1 = self._prepare_paired_arithmetic(nii1)
+            data2 = self._prepare_paired_arithmetic(nii2)
+            # Compute difference only after validating geometry and finite support.
             if swap_order:
                 # Compute sample2 - sample1
-                diff_data = np.asarray(nii2.dataobj, dtype=np.float32) - np.asarray(nii1.dataobj, dtype=np.float32)
+                diff_data = data2 - data1
                 diff_img = nib.Nifti1Image(diff_data, nii2.affine, nii2.header)
             else:
                 # Compute sample1 - sample2 (default)
-                diff_data = np.asarray(nii1.dataobj, dtype=np.float32) - np.asarray(nii2.dataobj, dtype=np.float32)
+                diff_data = data1 - data2
                 diff_img = nib.Nifti1Image(diff_data, nii1.affine, nii1.header)
+            self._prepare_paired_arithmetic(diff_img)  # Reject arithmetic overflow inside the domain.
             diff_images.append(diff_img)
 
         logger.info(f"Computed {len(diff_images)} difference images")
@@ -3247,7 +3312,7 @@ class StatCraftPipeline:
         # Run one-sample t-test
         # Get smoothing_fwhm from config
         smoothing_fwhm = self.config.get("glm", {}).get("smoothing_fwhm", 0)
-        self.glm = SecondLevelGLM(smoothing_fwhm=smoothing_fwhm)
+        self.glm = SecondLevelGLM(mask=self._inference_mask, smoothing_fwhm=smoothing_fwhm)
         results = self.glm.one_sample_ttest(diff_images, contrast_name=contrast_name)
 
         # Store input images (difference images) for saving to data/ folder
@@ -3342,6 +3407,8 @@ class StatCraftPipeline:
             raise ValueError(f"--combine requires at least 2 patterns via --patterns, got {len(sample_names)}")
 
         coeffs = self._parse_combine_expression(combine_expr, sample_names)
+        if set(coeffs) != set(sample_names):
+            raise ValueError("Every declared pattern must appear in --combine; remove unused patterns")
         combo_str = " ".join(f"{'+' if c >= 0 else '-'} {abs(c):g}*{n}" for n, c in coeffs.items())
         logger.info(f"Linear combination: {combo_str}")
         print(f"\nLinear combination: {combo_str}")
@@ -3349,7 +3416,7 @@ class StatCraftPipeline:
         # Get pairing entity
         paired_config = self.config.get("paired_test", {})
         pair_by_input = paired_config.get("pair_by") or "sub"
-        pair_by = self._normalize_bids_entity_key(pair_by_input)
+        pair_by = self._pairing_keys(pair_by_input)
         logger.info(f"Pairing by BIDS entity: '{pair_by_input}' (normalized to '{pair_by}')")
         print(f"Pairing files by BIDS entity: '{pair_by_input}' (normalized to '{pair_by}')")
         print("=" * 80)
@@ -3364,7 +3431,10 @@ class StatCraftPipeline:
         images_by_entity: Dict[str, Dict[Any, Dict]] = {}
         for name in sample_names:
             exclude = _exclude_for(name)
-            images = self.data_loader.get_images(pattern=sample_patterns[name], exclude_pattern=exclude)
+            images = self.data_loader.get_images(
+                pattern=sample_patterns[name], exclude_pattern=exclude,
+                participant_label=getattr(self, '_runtime_participant_label', self.config.get('participant_label')),
+            )
             logger.info(f"Found {len(images)} images for map '{name}'")
 
             print(f"\n{name} files ({len(images)}):")
@@ -3378,21 +3448,7 @@ class StatCraftPipeline:
                     entities_str = f" ({', '.join(parts)})"
                 display.append(f"[{i:3d}] {img['path']}{entities_str}")
 
-                if "entities" not in img or pair_by not in img["entities"]:
-                    logger.warning(f"{name}: Image missing '{pair_by}' entity: {img['path']}")
-                    print(f"  WARNING: {name} image missing '{pair_by}' entity: {img['path']}")
-                    continue
-
-                entity_value = img["entities"][pair_by]
-                if entity_value in entity_map:
-                    raise ValueError(
-                        f"Ambiguous match for map '{name}': multiple files found for "
-                        f"'{pair_by_input}={entity_value}':\n"
-                        f"  - {entity_map[entity_value]['path']}\n"
-                        f"  - {img['path']}\n"
-                        f"Each pattern must resolve to exactly one map per participant."
-                    )
-                entity_map[entity_value] = img
+            entity_map = self.data_loader.index_unique_images(images, pair_by, name)
 
             _print_file_list_limited(display, prefix="  ")
             print("=" * 80)
@@ -3442,6 +3498,24 @@ class StatCraftPipeline:
         if invalid_images:
             logger.warning(f"Excluded {len(invalid_images)} invalid images")
 
+        valid_paths = {str(Path(info["path"]).resolve()) for info in valid_images}
+        kept_entities = []
+        for entity in complete_entities:
+            infos = per_entity_images[entity]
+            if all(str(Path(info["path"]).resolve()) in valid_paths for info in infos):
+                kept_entities.append(entity)
+            else:
+                for info in infos:
+                    if str(Path(info["path"]).resolve()) in valid_paths:
+                        invalid_images.append({**info, "reason": "Excluded because another map in this complete pair failed geometry validation"})
+        complete_entities = kept_entities
+        self._validate_independent_pairs([images_by_entity[sample_names[0]][entity]
+                                          for entity in complete_entities])
+        retained_images = [info for entity in complete_entities for info in per_entity_images[entity]]
+        self._build_paired_inference_mask(retained_images)
+        pair_display = [f"{pair_by_input}={entity}: " + ", ".join(
+            str(images_by_entity[name][entity]['path']) for name in sample_names)
+            for entity in complete_entities]
         self._all_images = all_images
         self._invalid_images = invalid_images
 
@@ -3483,11 +3557,6 @@ class StatCraftPipeline:
         combined_images = []
         valid_entities = []
         for entity in complete_entities:
-            imgs = per_entity_images[entity]
-            if any(img in invalid_images for img in imgs):
-                logger.warning(f"Skipping '{pair_by_input}={entity}': invalid image in MNI space check")
-                continue
-
             combined_data = None
             ref_affine = None
             ref_header = None
@@ -3498,7 +3567,7 @@ class StatCraftPipeline:
                     nii = normalized_by_name[name][entity]
                 else:
                     nii = nib.load(img_info["path"], mmap=True)
-                data = np.asarray(nii.dataobj, dtype=np.float32) * coeff
+                data = self._prepare_paired_arithmetic(nii) * coeff
                 if combined_data is None:
                     combined_data = data
                     ref_affine = nii.affine
@@ -3506,7 +3575,9 @@ class StatCraftPipeline:
                 else:
                     combined_data = combined_data + data
 
-            combined_images.append(nib.Nifti1Image(combined_data, ref_affine, ref_header))
+            combined_image = nib.Nifti1Image(combined_data, ref_affine, ref_header)
+            self._prepare_paired_arithmetic(combined_image)
+            combined_images.append(combined_image)
             valid_entities.append(entity)
 
         logger.info(f"Computed {len(combined_images)} combined images")
@@ -3531,7 +3602,7 @@ class StatCraftPipeline:
         # Perform one-sample t-test on the combined images
         logger.info("Performing one-sample t-test on combined images...")
         smoothing_fwhm = self.config.get("glm", {}).get("smoothing_fwhm", 0)
-        self.glm = SecondLevelGLM(smoothing_fwhm=smoothing_fwhm)
+        self.glm = SecondLevelGLM(mask=self._inference_mask, smoothing_fwhm=smoothing_fwhm)
         self.glm.one_sample_ttest(combined_images, contrast_name=contrast_name)
 
         # Build a simple design matrix for reporting
@@ -3833,6 +3904,10 @@ class StatCraftPipeline:
             Dictionary with all results.
         """
         logger.info("Starting StatCraft pipeline...")
+
+        if participant_label is None:
+            participant_label = self.config.get("participant_label")
+        self._runtime_participant_label = participant_label
 
         # Store runtime parameters for reproducibility
         self._scaling_key = scaling_key if scaling else ("zscore" if zscore else None)

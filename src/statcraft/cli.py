@@ -474,13 +474,23 @@ def create_parser() -> argparse.ArgumentParser:
 
     paired.add_argument(
         "--pair-by",
-        metavar="ENTITY",
+        metavar="ENTITY[,ENTITY...]",
         dest="pair_by",
         default=None,
-        help="BIDS entity key for pairing observations (default: 'sub' for subject). "
+        help="Complete BIDS entity key for pairing observations (default: 'sub' for subject). "
              "Supports BIDS abbreviations ('sub', 'ses', 'run', etc.) or full names. "
-             "Examples: --pair-by sub, --pair-by ses, --pair-by run. "
+             "Examples: --pair-by sub, --pair-by sub,ses,run. Ambiguous matches are errors. "
              "Data filenames must contain matching entity values (e.g., '*ses-pre*').",
+    )
+
+    paired.add_argument(
+        "--inference-mask",
+        metavar="PATH_OR_GLOB",
+        help="Anatomical test domain for paired pattern/combine analyses. "
+             "Intersected across all included inputs and with their finite support; "
+             "independent of --scaling and --mask normalization ROIs. "
+             "Must already match the maps' shape and affine. Without it, all shared "
+             "finite voxels (including zero background) are tested.",
     )
 
     paired.add_argument(
@@ -606,7 +616,7 @@ def create_parser() -> argparse.ArgumentParser:
         "--atlas",
         metavar="NAME",
         default="harvard_oxford",
-        help="Atlas for anatomical annotation (default: harvard_oxford).",
+        help="Atlas for anatomical annotation (default: harvard_oxford); use 'none' to skip atlas annotation.",
     )
 
     processing.add_argument(
@@ -911,6 +921,8 @@ def main():
         config_overrides["sample_patterns"] = sample_patterns
     
     # Inference settings
+    if args.inference_mask:
+        config_overrides["inference_mask"] = args.inference_mask
     config_overrides["inference"] = {
         "alpha_corrected": args.alpha_corrected,
         "alpha_uncorrected": args.alpha_uncorrected,

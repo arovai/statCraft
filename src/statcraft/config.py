@@ -68,6 +68,7 @@ DEFAULT_CONFIG = {
     # Z-scoring settings
     "zscore": False,  # Whether to apply z-scoring
     "mask_pattern": None,  # Brain mask pattern for z-scoring (e.g., '/path/to/sub-*/*/*brain*mask.nii.gz')
+    "inference_mask": None,  # Fixed mask or per-observation glob; independent of normalization ROIs.
 
     # Statistical inference settings
     # NOTE: Two different significance levels (alpha) are used:

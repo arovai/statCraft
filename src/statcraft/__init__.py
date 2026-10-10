@@ -6,7 +6,7 @@ supporting group-level comparisons, method comparisons, and statistical
 inference on brain images (e.g., fMRI, PET).
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0.dev0"
 __author__ = "StatCraft Contributors"
 
 from statcraft.core.data_loader import DataLoader

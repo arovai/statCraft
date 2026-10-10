@@ -691,7 +691,7 @@ class DataLoader:
         self,
         images: List[Dict],
         reference_shape: Tuple[int, ...] = (91, 109, 91),
-        tolerance: float = 0.1,
+        tolerance: float = 1e-5,
     ) -> Tuple[List[Dict], List[Dict]]:
         """
         Validate that images are in MNI space with consistent dimensions.
@@ -719,6 +719,10 @@ class DataLoader:
             try:
                 img = self.load_image(img_info["path"])
 
+                if len(img.shape) != 3:
+                    invalid.append({**img_info, "reason": f"Expected a 3D map, got {img.shape}"})
+                    continue
+
                 # Check for NaN/Inf using memory-mapped access
                 # Sample the data instead of loading it all for efficiency
                 data_sample = np.asarray(img.dataobj[:10, :10, :10], dtype=np.float32)
@@ -745,7 +749,7 @@ class DataLoader:
                     continue
 
                 # Check affine consistency
-                if not np.allclose(img.affine, reference_affine, atol=tolerance):
+                if not np.allclose(img.affine, reference_affine, atol=tolerance, rtol=0):
                     invalid.append({
                         **img_info,
                         "reason": "Affine mismatch with reference image",
@@ -767,6 +771,33 @@ class DataLoader:
         
         logger.info(f"{len(valid)} images passed validation")
         return valid, invalid
+
+    @staticmethod
+    def index_unique_images(images: List[Dict], keys: List[str], label: str = "sample") -> Dict:
+        """Index one image per complete observation key; never choose an arbitrary match.
+
+        Missing entities and duplicates are errors. The caller must narrow patterns or
+        supply all matching entities (for example subject, session and run).
+        """
+        if not keys or len(set(keys)) != len(keys):
+            raise ValueError("Pairing keys must be nonempty and unique")
+        indexed = {}
+        for image in images:
+            entities = dict(image.get("entities", {}))
+            if image.get("subject") is not None:
+                entities.setdefault("subject", image["subject"])
+            missing = [key for key in keys if entities.get(key) is None]
+            if missing:
+                raise ValueError(f"{label}: missing pairing entities {missing}: {image['path']}")
+            key = tuple(str(entities[k]) for k in keys)
+            if key in indexed:
+                raise ValueError(
+                    f"Duplicate pairing key in {label}: {dict(zip(keys, key))}. "
+                    f"Matches: {indexed[key]['path']} and {image['path']}. "
+                    "Narrow the pattern or include session/run in --pair-by."
+                )
+            indexed[key] = image
+        return indexed
     
     def organize_paired_data(
         self,
@@ -794,49 +825,30 @@ class DataLoader:
         list of tuple
             List of (condition1_image, condition2_image) tuples.
         """
+        # This legacy interface uses pair_by as the *condition* entity. Subject
+        # remains the observation key; repeated sessions/runs require narrower input.
+        normalized = []
+        for image in images:
+            entities = dict(image.get("entities", {}))
+            if entities.get(pair_by) is None:
+                raise ValueError(f"Image missing condition entity '{pair_by}': {image['path']}")
+            entities[pair_by] = str(entities[pair_by]).replace(f"{pair_by[:3]}-", "")
+            normalized.append({**image, "entities": entities})
+        indexed = self.index_unique_images(normalized, ["subject", pair_by], "legacy paired analysis")
+        cond1 = str(condition1).replace(f"{pair_by[:3]}-", "")
+        cond2 = str(condition2).replace(f"{pair_by[:3]}-", "")
+        if cond1 == cond2:
+            raise ValueError("The paired conditions must differ")
+        subjects = sorted({key[0] for key in indexed})
         pairs = []
-        
-        # Group images by subject
-        by_subject: Dict[str, Dict[str, Dict]] = {}
-        
-        for img in images:
-            subject = img["subject"]
-            if subject is None:
-                logger.warning(f"Image has no subject: {img['path']}")
-                continue
-            
-            condition = img["entities"].get(pair_by)
-            if condition is None:
-                logger.warning(f"Image has no {pair_by}: {img['path']}")
-                continue
-            
-            if subject not in by_subject:
-                by_subject[subject] = {}
-            
-            # Normalize condition values
-            condition_normalized = condition.replace(f"{pair_by[:3]}-", "")
-            by_subject[subject][condition_normalized] = img
-        
-        # Create pairs
-        for subject, conditions in by_subject.items():
-            cond1_norm = condition1.replace(f"{pair_by[:3]}-", "")
-            cond2_norm = condition2.replace(f"{pair_by[:3]}-", "")
-            
-            if cond1_norm in conditions and cond2_norm in conditions:
-                pairs.append((conditions[cond1_norm], conditions[cond2_norm]))
+        for subject in subjects:
+            if (subject, cond1) in indexed and (subject, cond2) in indexed:
+                pairs.append((indexed[(subject, cond1)], indexed[(subject, cond2)]))
             else:
-                missing = []
-                if cond1_norm not in conditions:
-                    missing.append(condition1)
-                if cond2_norm not in conditions:
-                    missing.append(condition2)
-                logger.warning(
-                    f"Subject {subject} missing conditions: {missing}"
-                )
-        
+                logger.warning(f"Subject {subject} missing one paired condition; excluded")
         logger.info(f"Created {len(pairs)} pairs for {pair_by}: {condition1} vs {condition2}")
         return pairs
-    
+
     def get_participants_for_images(
         self,
         images: List[Dict],
