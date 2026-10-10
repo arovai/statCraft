@@ -13,7 +13,7 @@ participant_label: null
 
 # Paired test settings
 paired_test:
-  pair_by: sub  # BIDS entity used to match maps across a participant: "sub" (default), "ses", "run", etc.
+  pair_by: sub  # Complete matching key; may be [subject, session, run]. One observation per subject.
 
   # Define one named pattern per map (2 or more entries).
   # Each pattern must resolve to exactly one file per participant:
@@ -40,6 +40,10 @@ paired_test:
 #       myMap3: "**/*task-c*.nii.gz"
 #       myMap4: "**/*task-d*.nii.gz"
 #     combine: "myMap1 + myMap2 - myMap3 - myMap4"
+
+# Required user choice for anatomical inference; edit to match the maps' grid.
+# Independent of scaling_pattern / mask_pattern used for normalization.
+inference_mask: /path/to/predetermined_common_brain_mask.nii.gz
 
 # Statistical inference settings
 inference:

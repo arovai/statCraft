@@ -51,8 +51,8 @@ We strongly recommend to use a virtual environment to work with this project
 ```bash
 git clone https://github.com/ln2t/statCraft.git
 cd statCraft
-python -m venv
-source venv/bin/activate
+python -m venv .venv
+source .venv/bin/activate
 pip install -e .
 ```
 
@@ -71,7 +71,7 @@ Here are the typical usage, depending on the analysis type:
 **One-sample t-tests**
 
 ```bash
-statcraft <INPUT_DIR> <OUTPUT_DIR> --analysis-type one-sample --pattern "PATTERN"
+statcraft <INPUT_DIR> <OUTPUT_DIR> group --analysis-type one-sample --pattern "PATTERN"
 ```
 The pipeline will search for files matching `PATTERN` in the `<INPUT_DIR>` (exploring subfolders), perform the one-sample t-test, and save the results in `<OUTPUT_DIR>`.
 
@@ -79,7 +79,7 @@ The pipeline will search for files matching `PATTERN` in the `<INPUT_DIR>` (expl
 
 A one-sample t-test on maps from first-level `beta1` maps with `task-motor` in the name:
 ```bash
-statcraft /path/to/first_level_fmri_analyzes /path/to/output --analysis-type one-sample --pattern "*task-motor*beta1*.nii.gz"
+statcraft /path/to/first_level_fmri_analyzes /path/to/output group --analysis-type one-sample --pattern "*task-motor*beta1*.nii.gz"
 ```
 
 **Smoothing Brain Map Data**
@@ -87,7 +87,7 @@ statcraft /path/to/first_level_fmri_analyzes /path/to/output --analysis-type one
 When analyzing brain maps (e.g., statistical maps from first-level analyses), spatial smoothing can improve signal-to-noise ratio and increase statistical power. Use the `--smoothing` option to specify the smoothing strength in mm (FWHM - Full Width at Half Maximum):
 
 ```bash
-statcraft <INPUT_DIR> <OUTPUT_DIR> --analysis-type one-sample --pattern "PATTERN" --smoothing 6
+statcraft <INPUT_DIR> <OUTPUT_DIR> group --analysis-type one-sample --pattern "PATTERN" --smoothing 6
 ```
 
 The `--smoothing` parameter:
@@ -99,14 +99,14 @@ The `--smoothing` parameter:
 *Example with smoothing:*
 
 ```bash
-statcraft /path/to/first_level_fmri_analyzes /path/to/output --analysis-type one-sample --pattern "*task-motor*beta1*.nii.gz" --smoothing 6
+statcraft /path/to/first_level_fmri_analyzes /path/to/output group --analysis-type one-sample --pattern "*task-motor*beta1*.nii.gz" --smoothing 6
 ```
 
 **Two-sample t-tests**
 
 The logic is similar as above, except that now one must specify two patterns to define the two groups to compare. We can also assign these groups custom names to ease the output filenaming:
 ```bash
-statcraft <INPUT_DIR> <OUTPUT_DIR> --analysis-type two-sample --patterns "Group1=PATTERN1 Group2=PATTERN2"
+statcraft <INPUT_DIR> <OUTPUT_DIR> group --analysis-type two-sample --patterns "Group1=PATTERN1 Group2=PATTERN2"
 ```
 The strings `Group1` and `Group2` are arbitrary and are used in the output filenaming and in the analysis report.
 
@@ -114,7 +114,7 @@ The strings `Group1` and `Group2` are arbitrary and are used in the output filen
 
 If you have distinguishable names between the two groups you want to compare (e.g. `c001, c002, ...` for "controls" and `p001, p002, ...` for "patients"):
 ```bash
-statcraft /path/to/first_level_fmri_analyzes /path/to/output --analysis-type two-sample --patterns "controls=sub-c*.nii.gz patients=sub-p*.nii.gz"
+statcraft /path/to/first_level_fmri_analyzes /path/to/output group --analysis-type two-sample --patterns "controls=sub-c*.nii.gz patients=sub-p*.nii.gz"
 ```
 Of course, you can also use the GLM approach to have groups defined in a spreadsheet (see below), which has the advantage of being independent of your participant-naming choices.
 
@@ -122,34 +122,37 @@ Of course, you can also use the GLM approach to have groups defined in a spreads
 
 This case is similar to the two-sample case except that one must provide a key to pair the data across the two groups. We do this by using the `--pair-by` argument:
 ```bash
-statcraft <INPUT_DIR> <OUTPUT_DIR> --analysis-type paired --patterns "Group1=PATTERN1 Group2=PATTERN2" --pair-by "ENTITY"
+statcraft <INPUT_DIR> <OUTPUT_DIR> group --analysis-type paired --patterns "Group1=PATTERN1 Group2=PATTERN2" --pair-by "ENTITY"
 ```
 The pairing is done using BIDS-like `key-value` structures in filenames. For instance:
 - `--pair-by "sub"` (default): Files with `sub-001`, `sub-002`, etc. will be paired together
-- `--pair-by "ses"`: Files with `ses-pre`, `ses-post`, etc. will be paired together
-- `--pair-by "run"`: Files with `run-1`, `run-2`, etc. will be paired together
+- `--pair-by "sub,ses,run"`: Match all three entity values across methods in a selected session/run.
+- Entities that differ between conditions (for example pre/post session) must be selected in the patterns, not included in the matching key.
 
 Supports both BIDS abbreviations (`sub`, `ses`, `run`, `task`, etc.) and full names (`subject`, `session`, `run`, etc.).
 
-*Note:* `--pair-by` is optional, with default value `sub`.
+*Note:* `--pair-by` is optional, with default value `sub`. Every pattern must match exactly one file per complete key; duplicates and missing keys are errors. Repeated observations from the same subject are not independent and must be selected/aggregated upstream.
+
+Use `--inference-mask` to define a predetermined anatomical test domain independently of `--scaling`/`--mask` normalization ROIs. All paired routes use and save the intersection of original finite input support and explicit inference masks; valid zero differences remain in that domain. See [paired method comparisons](docs/paired_method_comparisons.md) for geometry/exclusion behavior, common normalization support, CVRMap examples, reproducible configurations and limitations.
 
 *Examples:*
 
 Compare maps from session 1 to session 2, paired by subjects (using default `--pair-by sub`):
 ```bash
-statcraft /path/to/first_level_fmri_analyzes /path/to/output --analysis-type paired --patterns "session1=*ses-1*.nii.gz session2=*ses-2*.nii.gz"
+statcraft /path/to/first_level_fmri_analyzes /path/to/output group --analysis-type paired --patterns "session1=*ses-1*.nii.gz session2=*ses-2*.nii.gz"
 ```
 
-Pair by session instead of subject (if you have multiple sessions and want to pair conditions within sessions):
+For pre/post sessions, match subjects while selecting each session explicitly:
 ```bash
-statcraft /path/to/first_level_fmri_analyzes /path/to/output --analysis-type paired --patterns "pre=*ses-pre*.nii.gz post=*ses-post*.nii.gz" --pair-by "ses"
+statcraft /path/to/first_level_fmri_analyzes /path/to/output group --analysis-type paired --patterns "pre=*ses-pre*.nii.gz post=*ses-post*.nii.gz" --pair-by sub \
+    --inference-mask /path/to/common_brain_mask.nii.gz
 ```
 
 **Custom linear combination of maps (generalized paired test)**
 
 The paired test can be generalized to combine any number of per-participant maps using a custom linear combination, instead of always computing a simple two-sample difference. Define as many named patterns as needed with `--patterns`, then describe how to combine them with `--combine`:
 ```bash
-statcraft <INPUT_DIR> <OUTPUT_DIR> --analysis-type paired --patterns "myMap1=PATTERN1 myMap2=PATTERN2 myMap3=PATTERN3" --combine "myMap1 + 0.5*myMap2 - myMap3"
+statcraft <INPUT_DIR> <OUTPUT_DIR> group --analysis-type paired --patterns "myMap1=PATTERN1 myMap2=PATTERN2 myMap3=PATTERN3" --combine "myMap1 + 0.5*myMap2 - myMap3"
 ```
 The `--combine` expression references the names defined in `--patterns` and supports `+`, `-`, and `coefficient*name` terms (e.g., `0.5*myMap2`). For each participant, the corresponding maps are combined voxel-wise according to this formula, and the resulting per-participant map is brought to a group-level one-sample t-test (exactly like the classic paired test on difference images).
 
@@ -159,14 +162,14 @@ As with the classic paired test, pairing across maps is done using BIDS-like `ke
 
 *Example with 3 maps:*
 ```bash
-statcraft /path/to/first_level_fmri_analyzes /path/to/output --analysis-type paired \
+statcraft /path/to/first_level_fmri_analyzes /path/to/output group --analysis-type paired \
     --patterns "myMap1=*task-a*stat-effect*.nii.gz myMap2=*task-b*stat-effect*.nii.gz myMap3=*task-c*stat-effect*.nii.gz" \
     --combine "myMap1 + 0.5*myMap2 - myMap3"
 ```
 
 *Example with 4 maps:*
 ```bash
-statcraft /path/to/first_level_fmri_analyzes /path/to/output --analysis-type paired \
+statcraft /path/to/first_level_fmri_analyzes /path/to/output group --analysis-type paired \
     --patterns "myMap1=*task-a*stat-effect*.nii.gz myMap2=*task-b*stat-effect*.nii.gz myMap3=*task-c*stat-effect*.nii.gz myMap4=*task-d*stat-effect*.nii.gz" \
     --combine "myMap1 + myMap2 - myMap3 - myMap4"
 ```
@@ -185,7 +188,7 @@ paired_test:
 ```
 then run:
 ```bash
-statcraft /path/to/first_level_fmri_analyzes /path/to/output --config config.yaml
+statcraft /path/to/first_level_fmri_analyzes /path/to/output group --config config.yaml
 ```
 Command-line options (`--patterns`, `--combine`, `--pair-by`, `--exclude`, ...) always take precedence over values loaded from the config file.
 
@@ -203,7 +206,7 @@ By default, a design matrix is built using all the columns of this file. If only
 
 Here is a example featuring this functionality:
 ```bash
-statcraft <INPUT_DIR> <OUTPUT_DIR> --analysis-type glm --participant-files <PATH_TO_PARTICIPANTS.TSV> --regressors sex age IQ --categorical-regressors sex --contrasts age M-F --pattern "*stat-effect*.nii.gz
+statcraft <INPUT_DIR> <OUTPUT_DIR> group --analysis-type glm --participants-file <PATH_TO_PARTICIPANTS.TSV> --regressors sex age IQ --categorical-regressors sex --contrasts age M-F --pattern "*stat-effect*.nii.gz"
 ```
 In this example: columns `sex`, `age` and `IQ` are used to build the design matrix, with `sex` being treated as a categorical variable, and two contrasts are computed: the effect of `age` as well as the difference between `M` and `F` (assuming those are the labels in original `participants.tsv` file).
 
