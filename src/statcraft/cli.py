@@ -544,6 +544,8 @@ def create_parser() -> argparse.ArgumentParser:
         help="Z-score individual data at subject level: (x - mean(x)) / std(x). "
              "Standardizes each subject to mean=0, std=1. Requires --mask.",
     )
+    normalization.add_argument("--no-zscore", action="store_false", dest="zscore",
+                               default=argparse.SUPPRESS, help="Disable z-scoring requested in a config file.")
 
     normalization.add_argument(
         "--mask",
@@ -595,6 +597,8 @@ def create_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run permutation testing for FWER correction.",
     )
+    inference.add_argument("--no-permutation", action="store_false", dest="permutation",
+                           default=argparse.SUPPRESS, help="Disable permutation inference requested in a config file.")
 
     inference.add_argument(
         "--n-permutations",
@@ -670,6 +674,14 @@ def create_parser() -> argparse.ArgumentParser:
     )
 
     output.add_argument(
+        "--no-report",
+        action="store_false",
+        dest="generate_report",
+        default=True,
+        help="Skip HTML generation (numeric outputs and provenance are still saved).",
+    )
+
+    output.add_argument(
         "--save-supplementary-data",
         action="store_true",
         dest="save_supplementary_data",
@@ -726,6 +738,47 @@ def main():
     if args.config:
         try:
             cfg = Config(config_file=args.config)
+            # Config values become parser defaults; parsing again applies only
+            # explicitly supplied CLI arguments on top. Argparse defaults must
+            # never silently replace a requested permutation/mask/model setting.
+            paired = cfg.get('paired_test', {})
+            design = cfg.get('design_matrix', {})
+            inference = cfg.get('inference', {})
+            output = cfg.get('output', {})
+            patterns = (paired.get('sample_patterns') if cfg.get('analysis_type') == 'paired'
+                        else cfg.get('sample_patterns'))
+            exclude = cfg.get('exclude_pattern')
+            if isinstance(exclude, dict):
+                exclude = ' '.join(f'{name}={pattern}' for name, pattern in exclude.items())
+            scaling = cfg.get('scaling_pattern')
+            if scaling and cfg.get('scaling_key'):
+                scaling = f"{cfg.get('scaling_key')}={scaling}"
+            parser.set_defaults(
+                analysis_type=cfg.get('analysis_type'), participant_label=cfg.get('participant_label'),
+                pattern=cfg.get('file_pattern'),
+                exclude=exclude,
+                patterns=' '.join(f'{name}={pattern}' for name, pattern in patterns.items()) if patterns else None,
+                pair_by=paired.get('pair_by'), condition1=paired.get('condition1'), condition2=paired.get('condition2'),
+                combine=paired.get('combine'), scaling=scaling, zscore=cfg.get('zscore', False),
+                mask=cfg.get('mask_pattern'), inference_mask=cfg.get('inference_mask'),
+                contrasts=cfg.get('contrasts') or ([cfg.get('contrast')] if cfg.get('contrast') else None),
+                regressors=design.get('columns') if isinstance(design.get('columns'), list) else None,
+                categorical_regressors=design.get('categorical_columns'),
+                no_standardize_regressors=design.get('no_standardize_columns'),
+                no_intercept=not design.get('add_intercept', True),
+                alpha_corrected=inference.get('alpha_corrected', 0.05),
+                alpha_uncorrected=inference.get('alpha_uncorrected', 0.001),
+                cluster_threshold=inference.get('cluster_threshold', 10),
+                permutation=inference.get('run_permutation', False),
+                n_permutations=inference.get('n_permutations', 1000),
+                smoothing_fwhm=cfg.get('glm', {}).get('smoothing_fwhm') or 0,
+                atlas=cfg.get('atlas', 'harvard_oxford'), n_jobs=cfg.get('n_jobs', 1),
+                verbose=cfg.get('verbose', 1), generate_report=output.get('generate_report', True),
+                save_supplementary_data=output.get('save_supplementary_data', False),
+                extra_cluster_analysis=cfg.get('extra_cluster_analysis', False),
+                cluster_overlap_threshold=cfg.get('cluster_overlap_threshold', 5.0),
+            )
+            args = parser.parse_args()
             if args.verbose > 0:
                 print(f"Using configuration from: {args.config}")
         except Exception as e:
@@ -848,6 +901,10 @@ def main():
         config_overrides["analysis_type"] = args.analysis_type
     if args.contrasts:
         config_overrides["contrasts"] = list(args.contrasts)
+        if args.analysis_type == 'paired':
+            if len(args.contrasts) != 1:
+                parser.error("Paired analysis accepts exactly one contrast")
+            config_overrides['contrast'] = args.contrasts[0]
 
     # Participant filter
     if args.participant_label:
@@ -862,7 +919,7 @@ def main():
         "standardize_continuous": True,
     }
     
-    if args.regressors:
+    if args.regressors is not None:
         # User specified columns - use these plus any additional categorical regressors
         columns = list(args.regressors)
         # Add categorical regressors not already in the list
@@ -955,7 +1012,7 @@ def main():
 
     # Output settings
     config_overrides["output"] = {
-        "generate_report": True,
+        "generate_report": args.generate_report,
         "save_supplementary_data": args.save_supplementary_data,
     }
 
@@ -968,6 +1025,7 @@ def main():
             # cfg was already loaded from config file
             # Now apply the overrides
             cfg._update_nested(cfg.data, config_overrides)
+            cfg.validate()
         else:
             cfg = Config(**config_overrides)
         

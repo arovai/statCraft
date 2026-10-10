@@ -397,6 +397,11 @@ class DataLoader:
                     "space": "space",
                     "desc": "description",
                     "stat": "stat",
+                    "acq": "acquisition", "ce": "ceagent", "rec": "reconstruction",
+                    "dir": "direction", "mod": "modality", "echo": "echo",
+                    "flip": "flip", "inv": "inversion", "mt": "mt", "part": "part",
+                    "proc": "processing", "hemi": "hemisphere", "split": "split",
+                    "res": "resolution", "den": "density", "label": "label",
                 }
                 key = key_map.get(key, key)
                 entities[key] = value

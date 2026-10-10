@@ -129,7 +129,7 @@ def test_actual_routes_finite_mask_keeps_zero_differences_and_matches_reference(
 def test_actual_routes_reject_foreign_normalization_grid(cohort, tmp_path, combine):
     foreign = save_image(tmp_path / "foreign.nii.gz", np.ones((3, 3, 3)), translation=20)
     pipeline, patterns = pipeline_for(cohort, tmp_path, combine)
-    with pytest.raises(RuntimeError, match="shape/affine mismatch"):
+    with pytest.raises((ValueError, RuntimeError), match="shape/affine mismatch"):
         run_route(pipeline, patterns, combine, scaling=str(foreign))
 
 
@@ -139,8 +139,9 @@ def test_normalization_roi_does_not_define_test_domain(cohort, tmp_path, combine
     roi[0, 0, 0] = 1
     roi_path = save_image(tmp_path / "normalization_roi.nii.gz", roi)
     pipeline, patterns = pipeline_for(cohort, tmp_path, combine)
-    run_route(pipeline, patterns, combine, scaling=str(roi_path))
+    result = run_route(pipeline, patterns, combine, scaling=str(roi_path))
     assert int(pipeline.glm.mask.get_fdata().sum()) == 26
+    assert int(nib.load(result['saved_files']['normalization_mask']).get_fdata().sum()) == 1
 
 
 def test_permutation_and_all_parametric_families_receive_identical_mask(cohort, tmp_path, monkeypatch):
@@ -181,6 +182,17 @@ def test_missing_complete_entity_is_error(cohort, tmp_path):
         run_route(pipeline, patterns)
 
 
+def test_acquisition_and_resolution_aliases_agree_with_glob_parser(cohort, tmp_path):
+    data, _ = cohort
+    for path in data.glob('*.nii.gz'):
+        path.rename(path.with_name(path.name.replace('_desc-', '_acq-test_res-2_desc-')))
+    pipeline, patterns = pipeline_for(cohort, tmp_path,
+                                     paired_test={'pair_by': 'sub,acq,res',
+                                                  'sample_patterns': {'A': '*desc-A_*', 'B': '*desc-B_*'}})
+    run_route(pipeline, patterns)
+    assert len(pipeline._diff_images) == 4
+
+
 def test_simple_ttest_rejects_repeated_subject_runs(cohort, tmp_path):
     data, _ = cohort
     for name in ("A", "B"):
@@ -202,7 +214,7 @@ def test_actual_routes_reject_inference_mask_geometry(cohort, tmp_path, combine)
 def test_actual_route_rejects_zscore_mask_geometry(cohort, tmp_path):
     foreign = save_image(tmp_path / "foreign_zscore.nii.gz", np.ones((3, 3, 3)), translation=10)
     pipeline, patterns = pipeline_for(cohort, tmp_path)
-    with pytest.raises(RuntimeError, match="shape/affine mismatch"):
+    with pytest.raises((ValueError, RuntimeError), match="shape/affine mismatch"):
         run_route(pipeline, patterns, zscore=True, mask=str(foreign))
 
 
@@ -213,7 +225,8 @@ def test_participant_selection_is_applied_before_pairing(cohort, tmp_path):
     assert len(pipeline._diff_images) == 2
 
 
-def test_legacy_condition_route_uses_shared_mask_and_excludes_geometry_partner(cohort, tmp_path):
+@pytest.mark.parametrize('normalize', [False, True])
+def test_legacy_condition_route_uses_shared_mask_and_excludes_geometry_partner(cohort, tmp_path, normalize):
     data, mask = cohort
     for path in data.glob("*desc-C*"):
         path.unlink()
@@ -226,11 +239,17 @@ def test_legacy_condition_route_uses_shared_mask_and_excludes_geometry_partner(c
         'inference': {'corrections': []}, 'verbose': 0,
     })
     pipeline.annotate_clusters = lambda: {}
-    result = pipeline.run(pattern='*cvr.nii.gz')
+    result = pipeline.run(pattern='*cvr.nii.gz', scaling=str(mask) if normalize else None)
     assert len(pipeline._diff_images) == 3
     assert all(info['subject'] != '04' for info in result['images'])
     assert int(pipeline.glm.mask.get_fdata().sum()) == 26
     assert len(pipeline._invalid_images) == 2
+    if normalize:
+        domain = nib.load(mask).get_fdata().astype(bool)
+        a = nib.load(next(data.glob('sub-01*desc-A*'))).get_fdata()
+        b = nib.load(next(data.glob('sub-01*desc-B*'))).get_fdata()
+        np.testing.assert_allclose(pipeline._diff_images[0].get_fdata()[domain],
+                                   (a/a[domain].mean()-b/b[domain].mean())[domain])
 
 
 def test_cli_example_runs_full_pattern_path(cohort, tmp_path, monkeypatch):
@@ -249,3 +268,72 @@ def test_cli_example_runs_full_pattern_path(cohort, tmp_path, monkeypatch):
     saved_mask = list((tmp_path / 'cli_output' / 'maps').glob('*desc-inference_mask.nii.gz'))
     assert len(saved_mask) == 1
     assert int(nib.load(saved_mask[0]).get_fdata().sum()) == 26
+
+
+def test_invalid_paired_contrast_does_not_fall_back_to_default(cohort, tmp_path):
+    pipeline, patterns = pipeline_for(cohort, tmp_path, contrast='Typo-A')
+    with pytest.raises(ValueError, match='Paired contrast must be'):
+        run_route(pipeline, patterns)
+
+
+@pytest.mark.parametrize('combine', [False, True])
+def test_normalization_uses_same_finite_voxels_for_all_methods(cohort, tmp_path, combine):
+    data, _ = cohort
+    path = next(data.glob('sub-01*desc-A*'))
+    values = nib.load(path).get_fdata()
+    values[1, 1, 1] = np.nan
+    save_image(path, values)
+    roi_path = save_image(tmp_path / 'normalization_all.nii.gz', np.ones((3, 3, 3)))
+    pipeline, patterns = pipeline_for(cohort, tmp_path, combine)
+    run_route(pipeline, patterns, combine, scaling=str(roi_path))
+    support = pipeline._paired_normalization_support
+    assert not support[1, 1, 1]
+    assert support[2, 2, 2]  # normalization domain is independent of inference domain
+    assert support.sum() == 26
+    for subject, difference in zip(range(1, 5), pipeline._diff_images):
+        normalized = []
+        for name in ('A', 'B', 'C') if combine else ('A', 'B'):
+            array = nib.load(next(data.glob(f'sub-{subject:02}*desc-{name}*'))).get_fdata()
+            normalized.append(array / array[support].mean())
+        expected = normalized[0] + normalized[1] - 2*normalized[2] if combine else normalized[0]-normalized[1]
+        inference_support = pipeline.glm.mask.get_fdata().astype(bool)
+        np.testing.assert_allclose(difference.get_fdata()[inference_support], expected[inference_support], rtol=1e-6)
+
+
+def test_config_only_cli_preserves_pairing_mask_inference_and_direction(cohort, tmp_path, monkeypatch):
+    import sys
+    import yaml
+    from statcraft.cli import main
+
+    data, mask = cohort
+    config_path = tmp_path / 'comparison.yaml'
+    config_path.write_text(yaml.safe_dump({
+        'analysis_type': 'paired', 'inference_mask': str(mask), 'contrast': 'B-A',
+        'paired_test': {'pair_by': ['subject', 'session', 'run'],
+                        'sample_patterns': {'A': '*desc-A_*', 'B': '*desc-B_*'}},
+        'inference': {'run_permutation': True, 'n_permutations': 16, 'alpha_uncorrected': 0.02,
+                      'alpha_corrected': 0.1, 'cluster_threshold': 0},
+        'glm': {'smoothing_fwhm': 0}, 'atlas': 'none', 'random_state': 11,
+        'output': {'generate_report': False}, 'verbose': 0,
+    }))
+    out = tmp_path / 'config_output'
+    monkeypatch.setattr(sys, 'argv', ['statcraft', str(data), str(out), 'group', '--config', str(config_path)])
+    main()
+    saved_configs = list(out.glob('logs/**/*config.yaml'))
+    assert len(saved_configs) == 1
+    saved = yaml.safe_load(saved_configs[0].read_text())
+    assert saved['analysis_type'] == 'paired'
+    assert saved['inference_mask'] == str(mask)
+    assert saved['inference']['run_permutation']
+    assert saved['inference']['n_permutations'] == 16
+    assert saved['inference']['alpha_uncorrected'] == 0.02
+    assert saved['inference']['alpha_corrected'] == 0.1
+    assert saved['contrast'] == 'B-A'
+    assert not saved['output']['generate_report']
+    assert any(out.glob('maps/*B_minus_A*stat-fwer_perm*'))
+    effect = next(out.glob('maps/*B_minus_A*stat-effect_size.nii.gz'))
+    expected = np.mean([nib.load(next(data.glob(f'sub-{subject:02}*desc-B*'))).get_fdata()
+                        - nib.load(next(data.glob(f'sub-{subject:02}*desc-A*'))).get_fdata()
+                        for subject in range(1, 5)], axis=0)
+    domain = nib.load(mask).get_fdata().astype(bool)
+    np.testing.assert_allclose(nib.load(effect).get_fdata()[domain], expected[domain])
