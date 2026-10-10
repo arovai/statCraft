@@ -80,6 +80,45 @@ fail rather than being silently replaced. Means/standard deviations are
 calculated separately for each map, so normalization changes the scientific
 quantity being compared; specify its rationale in the manuscript.
 
+### Use the inference mask for whole-brain normalization
+
+Supply the same mask path (or the same per-observation mask glob) to
+`--inference-mask` and `--scaling brain=...` when both operations should use the
+same domain. For paired group analysis, the effective domain is the intersection
+across **all included maps and participants**, not a different mask for each
+participant pair. If several contrasts should share exactly the same domain,
+construct one intersection over the complete comparison set and supply that
+fixed mask to every contrast. Retain the input masks and report coverage loss.
+This domain is the common covered brain, which may be smaller than a full
+anatomical whole-brain mask. Valid zero and negative estimates are not excluded.
+
+Mean scaling can become unstable for signed maps whose positive and negative
+values cancel. Configure an optional safeguard in the YAML file:
+
+```yaml
+normalization:
+  mean_guard:
+    minimum_absolute_mean_ratio: 0.01
+    require_positive_mean: true
+```
+
+The signed diagnostic is `q = mean(values) / mean(abs(values))`, calculated on
+the effective normalization mask. With these settings, normalization requires
+`q >= 0.01`; zero and nonfinite means also fail. This is invariant to positive
+changes of units. The example bounds the mean absolute normalized magnitude at
+100; it does **not** bound every voxel, establish adequate SNR or define a
+physiological exclusion threshold. A failing map stops the analysis with an
+error, without dropping a pair, clipping values or substituting another scale.
+Inspect the map and mask before deciding what to do.
+
+The general-purpose defaults are ratio `0.0` and positive-mean requirement
+`false`, preserving exact-zero-only rejection and support for negative-mean maps.
+Thus the stronger CVR policy must be explicitly selected. The paired inference
+mask JSON includes `MeanNormalizationQC` entries for each input map: signed mean,
+mean absolute magnitude, signed ratio, effective voxel count and guard settings.
+The same quantities are logged. Setting the identical mask for inference and
+scaling does not make normalization implicit; specify both settings.
+
 ## Command-line examples
 
 The positional analysis level `group` is required. Input patterns are relative to
@@ -142,6 +181,10 @@ paired_test:
     Veins: '**/*ses-01*run-1*proc-veinVariant*desc-cvr_bold.nii.gz'
 scaling_key: brain
 scaling_pattern: /data/masks/common_brain_mask.nii.gz
+normalization:
+  mean_guard:
+    minimum_absolute_mean_ratio: 0.01
+    require_positive_mean: true
 inference:
   alpha_corrected: 0.05
   alpha_uncorrected: 0.001

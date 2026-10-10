@@ -300,6 +300,34 @@ def test_normalization_uses_same_finite_voxels_for_all_methods(cohort, tmp_path,
         np.testing.assert_allclose(difference.get_fdata()[inference_support], expected[inference_support], rtol=1e-6)
 
 
+def test_same_mask_for_normalization_and_inference_records_each_denominator(cohort, tmp_path):
+    _, mask = cohort
+    pipeline, patterns = pipeline_for(cohort, tmp_path, normalization={
+        'mean_guard': {'minimum_absolute_mean_ratio': .01, 'require_positive_mean': False}})
+    result = run_route(pipeline, patterns, scaling=str(mask))
+    inference = nib.load(result['saved_files']['inference_mask']).get_fdata()
+    normalization = nib.load(result['saved_files']['normalization_mask']).get_fdata()
+    np.testing.assert_array_equal(inference, normalization)
+    metadata = json.loads(result['saved_files']['inference_mask_metadata'].read_text())
+    assert len(metadata['MeanNormalizationQC']) == 8
+    for row in metadata['MeanNormalizationQC'].values():
+        assert row['VoxelCount'] == 26
+        assert abs(row['SignedMeanToMeanAbsoluteRatio']) >= .01
+        assert row['MinimumAbsoluteMeanRatio'] == .01
+
+
+def test_paired_route_stops_for_unstable_denominator_without_dropping_pair(cohort, tmp_path):
+    data, mask = cohort
+    values = np.zeros((3, 3, 3))
+    inside = nib.load(mask).get_fdata().astype(bool)
+    values[inside] = np.tile([1, -1], 13) + .0001
+    save_image(next(data.glob('sub-01*desc-A*')), values)
+    pipeline, patterns = pipeline_for(cohort, tmp_path, normalization={
+        'mean_guard': {'minimum_absolute_mean_ratio': .01, 'require_positive_mean': True}})
+    with pytest.raises(RuntimeError, match='Unstable normalization denominator'):
+        run_route(pipeline, patterns, scaling=str(mask))
+
+
 def test_config_only_cli_preserves_pairing_mask_inference_and_direction(cohort, tmp_path, monkeypatch):
     import sys
     import yaml

@@ -64,6 +64,13 @@ DEFAULT_CONFIG = {
     # Scaling settings
     "scaling_key": None,  # Key for output filenames (e.g., "brain")
     "scaling_pattern": None,  # Mask pattern or path for scaling
+    "normalization": {
+        "mean_guard": {
+            # Opt-in cancellation/sign policy; general signed-map scaling stays supported.
+            "minimum_absolute_mean_ratio": 0.0,
+            "require_positive_mean": False,
+        },
+    },
 
     # Z-scoring settings
     "zscore": False,  # Whether to apply z-scoring

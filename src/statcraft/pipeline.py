@@ -2715,6 +2715,9 @@ class StatCraftPipeline:
         image: Union[str, Path, nib.Nifti1Image],
         mask: Union[str, Path, nib.Nifti1Image],
         support: Optional[np.ndarray] = None,
+        minimum_absolute_mean_ratio: float = 0.0,
+        require_positive_mean: bool = False,
+        normalization_qc: Optional[Dict] = None,
     ) -> nib.Nifti1Image:
         """
         Scale an image by dividing by the mean value within a mask.
@@ -2725,12 +2728,28 @@ class StatCraftPipeline:
             Image to scale.
         mask : str, Path, or nibabel image
             Mask defining the region for mean computation.
+        minimum_absolute_mean_ratio : float
+            Minimum abs(mean(values)) / mean(abs(values)) on the effective ROI.
+            Zero preserves the exact-zero-only guard. This is a cancellation
+            safeguard, not a physiological validity threshold.
+        require_positive_mean : bool
+            Reject nonpositive means when the selected application requires it.
+        normalization_qc : dict, optional
+            Filled with the effective denominator, ratio and guard settings.
 
         Returns
         -------
         nibabel.Nifti1Image
             Scaled image.
         """
+        if (isinstance(minimum_absolute_mean_ratio, (bool, np.bool_)) or
+                not isinstance(minimum_absolute_mean_ratio, (int, float, np.number)) or
+                not np.isfinite(minimum_absolute_mean_ratio) or
+                not 0 <= minimum_absolute_mean_ratio <= 1):
+            raise ValueError("minimum_absolute_mean_ratio must be finite and between 0 and 1")
+        if not isinstance(require_positive_mean, (bool, np.bool_)):
+            raise ValueError("require_positive_mean must be boolean")
+
         # Load image with memory mapping
         if isinstance(image, (str, Path)):
             img = nib.load(image, mmap=True)
@@ -2771,11 +2790,34 @@ class StatCraftPipeline:
             f"({used_percentage:.2f}% of masked voxels)"
         )
 
-        mean_val = np.nanmean(used_voxels)
+        mean_val = float(np.mean(used_voxels))
+        mean_absolute = float(np.mean(np.abs(used_voxels)))
+
+        if not np.isfinite(mean_val) or not np.isfinite(mean_absolute):
+            raise ValueError("Nonfinite normalization mean or mean absolute magnitude")
 
         if mean_val == 0:
             raise ValueError("Mask region has zero mean - cannot scale by zero")
 
+        ratio = mean_val / mean_absolute
+        if require_positive_mean and mean_val <= 0:
+            raise ValueError(f"Normalization requires a positive mean, got {mean_val:.8g}")
+        if abs(ratio) < minimum_absolute_mean_ratio:
+            raise ValueError(
+                f"Unstable normalization denominator: mean={mean_val:.8g}, "
+                f"mean_absolute={mean_absolute:.8g}, q={ratio:.8g}; "
+                f"requires abs(q) >= {minimum_absolute_mean_ratio:.8g}. "
+                "Inspect the map and mask; no alternate normalization was substituted."
+            )
+        if normalization_qc is not None:
+            normalization_qc.update(
+                Mean=mean_val, MeanAbsoluteMagnitude=mean_absolute,
+                SignedMeanToMeanAbsoluteRatio=ratio, VoxelCount=int(used_voxels.size),
+                MinimumAbsoluteMeanRatio=float(minimum_absolute_mean_ratio),
+                RequirePositiveMean=bool(require_positive_mean), Passed=True,
+            )
+        logger.info("Mean normalization: mean=%g, mean_abs=%g, q=%g, voxels=%d",
+                    mean_val, mean_absolute, ratio, used_voxels.size)
 
         # Scale the data
         scaled_data = img_data / mean_val
@@ -2810,6 +2852,13 @@ class StatCraftPipeline:
         import os
 
         logger.info(f"Applying data scaling with pattern: {scaling_pattern}")
+        guard = self.config.get("normalization", {}).get("mean_guard", {})
+        if not isinstance(guard, dict):
+            raise ValueError("normalization.mean_guard must be a mapping")
+        minimum_ratio = guard.get("minimum_absolute_mean_ratio", 0.0)
+        positive_mean = guard.get("require_positive_mean", False)
+        if not hasattr(self, '_mean_normalization_qc'):
+            self._mean_normalization_qc = {}
 
         # Expand tilde to home directory
         scaling_pattern = os.path.expanduser(scaling_pattern)
@@ -2841,11 +2890,13 @@ class StatCraftPipeline:
         n_scaled = 0
 
         for img_info in images_info:
+            normalization_qc = {}
             if is_fixed_mask:
                 # Use the same mask for all images
                 try:
                     scaled_img = self._scale_image_by_mask(
-                        img_info["path"], fixed_mask, getattr(self, '_paired_normalization_support', None))
+                        img_info["path"], fixed_mask, getattr(self, '_paired_normalization_support', None),
+                        minimum_ratio, positive_mean, normalization_qc)
                     self._scaling_rois_used[str(img_info["path"])] = scaling_pattern
                     n_scaled += 1
                 except Exception as e:
@@ -2862,14 +2913,19 @@ class StatCraftPipeline:
 
                 try:
                     scaled_img = self._scale_image_by_mask(
-                        img_info["path"], mask_path, getattr(self, '_paired_normalization_support', None))
+                        img_info["path"], mask_path, getattr(self, '_paired_normalization_support', None),
+                        minimum_ratio, positive_mean, normalization_qc)
                     self._scaling_rois_used[str(img_info["path"])] = str(mask_path)
                     n_scaled += 1
                 except Exception as e:
                     logger.error(f"Failed to scale image {img_info['path'].name}: {e}")
                     raise RuntimeError(f"Scaling failed for image {img_info['path'].name}: {e}")
 
+            self._mean_normalization_qc[str(img_info['path'])] = normalization_qc
             scaled_images.append(scaled_img)
+
+        if hasattr(self, '_inference_mask_metadata'):
+            self._inference_mask_metadata['MeanNormalizationQC'] = self._mean_normalization_qc
 
         logger.info(f"Scaling complete: {n_scaled} images scaled successfully")
         print(f"  Scaled {n_scaled}/{len(images_info)} images successfully")
