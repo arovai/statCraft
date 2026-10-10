@@ -103,7 +103,13 @@ The `proc-gsVariant`/`proc-veinVariant` tokens are placeholders: replace them
 with the exact `proc` values from the CVRMap outputs for the denoising/probe/lag
 recipes you intend to compare. Select those processing identities explicitly;
 a broad `*desc-cvr_bold.nii.gz` can match several variants and will fail as
-ambiguous. The participant-map suffix is `desc-cvr_bold.nii.gz`. If the gas and resting scans
+ambiguous. Current CVRMap manifests distinguish the cohort-wide `ProcessingVariant`
+recipe from participant-specific `ResultIdentitySHA256` input provenance. Confirm
+that the chosen recipe ID is shared across the intended cohort and inspect its
+`ProcessingRecipe`; earlier development outputs used participant-specific `proc`
+IDs and must be regenerated or selected in separate, audited recipe directories.
+StatCraft does not infer scientific compatibility from the filename token alone.
+The participant-map suffix is `desc-cvr_bold.nii.gz`. If the gas and resting scans
 have different task/run labels, pair by `sub` (or `sub,ses`) and choose each task
 and run in its corresponding pattern. Put both maps on a scientifically justified
 common relative scale before comparing; absolute `%BOLD/mmHg` and uncalibrated
