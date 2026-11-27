@@ -286,6 +286,13 @@ class Config:
         if not 0 < inference["alpha_uncorrected"] < 1:
             errors.append(f"alpha_uncorrected must be between 0 and 1, got {inference['alpha_uncorrected']}")
         
+        corrections = inference.get("corrections", [])
+        if not isinstance(corrections, list):
+            errors.append("inference.corrections must be a list")
+        elif "rft" in corrections:
+            if inference["alpha_corrected"] > 0.1:
+                errors.append("RFT requires alpha_corrected <= 0.1")
+
         if errors:
             raise ValueError("Configuration validation failed:\n" + "\n".join(f"  - {e}" for e in errors))
     
@@ -769,7 +776,8 @@ inference:
 
   # Multiple comparison correction methods to apply
   # CLI equivalent: None (config-only option, all methods run by default)
-  # Valid options: "uncorrected", "fdr", "bonferroni", "permutation"
+  # Valid options: "uncorrected", "fdr", "bonferroni", "permutation", "rft"
+# RFT is opt-in, map-only, and requires installation with the [rft] extra.
   # Results are saved for all specified methods
   # Example: corrections: ["uncorrected", "fdr", "bonferroni"]
   corrections:

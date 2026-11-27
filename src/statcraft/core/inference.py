@@ -161,6 +161,32 @@ class StatisticalInference:
         logger.info(f"Resampled {len(resampled_images) - 1} images to match reference affine")
         return resampled_images
     
+    def threshold_rft(self, result, context, contrast_name="contrast"):
+        """Apply residual-based T-field FWE correction with a descriptive extent filter."""
+        from statcraft.core.rft import threshold_contrast
+
+        image, threshold, metadata = threshold_contrast(
+            result, context, self.alpha_corrected, self.two_sided
+        )
+        image, _ = threshold_stats_img(
+            image, mask_img=context["mask"], threshold=threshold,
+            height_control=None, cluster_threshold=self.cluster_threshold,
+            two_sided=self.two_sided,
+        )
+        table = get_clusters_table(
+            image, stat_threshold=threshold, cluster_threshold=self.cluster_threshold,
+            two_sided=self.two_sided,
+        )
+        metadata["extent_filter_voxels"] = self.cluster_threshold
+        metadata["output_surviving_voxels"] = int(np.count_nonzero(image.get_fdata()))
+        self.thresholded_maps.setdefault(contrast_name, {})["rft"] = image
+        self.threshold_values.setdefault(contrast_name, {})["rft"] = threshold
+        self.cluster_tables.setdefault(contrast_name, {})["rft"] = table
+        if not hasattr(self, "rft_metadata"):
+            self.rft_metadata = {}
+        self.rft_metadata[contrast_name] = metadata
+        return image, table
+
     def threshold_uncorrected(
         self,
         stat_map: nib.Nifti1Image,

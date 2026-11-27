@@ -411,3 +411,62 @@ Equivalent YAML settings (CLI arguments override them):
 harmonize_affines: true
 reference_image: /opt/fsl/data/standard/MNI152_T1_2mm.nii.gz
 ```
+
+### RFT FWE correction for volumetric maps
+
+StatCraft 0.3.0 adds opt-in voxel-level random field theory (RFT) correction
+through [pyrft](https://github.com/arovai/pyrft). Install the optional backend:
+
+```sh
+python -m pip install 'statcraft[rft] @ git+https://github.com/arovai/statCraft.git'
+```
+
+For a local checkout, use `python -m pip install -e '.[rft]'`. Python 3.10 or
+later and Git are required. The extra pins pyrft to a specific source commit;
+pyrft is not yet published on PyPI.
+
+Add RFT to your analysis configuration:
+
+```yaml
+inference:
+  corrections: [uncorrected, fdr, bonferroni, rft]
+  alpha_corrected: 0.05
+  two_sided: true
+  cluster_threshold: 0
+```
+
+The existing correction defaults are unchanged. RFT supports volumetric T
+contrasts from one-sample, two-sample, paired (including combined difference
+maps), and general linear models. It is unavailable for connectivity matrices
+or tables; requesting it for connectivity analysis raises an error. F contrasts
+are currently unsupported. Corrected alpha must be in `(0, 0.1]`.
+
+Smoothness is estimated from the full fitted group-model OLS residual stack,
+after any input normalization, pairing, spatial harmonization, and model
+smoothing. Residuals are standardized by `sqrt(RSS / residual_df)`. The fitted
+model's actual mask and residual degrees of freedom define the search region
+and T field. Neither the observed statistic map nor the configured smoothing
+kernel supplies the smoothness estimate. Estimation uses complete interior
+2×2×2 derivative neighborhoods; insufficient or degenerate residuals fail
+explicitly. Retaining these residuals increases memory use when RFT is enabled.
+
+Pyrft computes a native T height threshold using pure RFT, without a Bonferroni
+fallback. A two-sided analysis allocates half the requested alpha to each tail;
+a one-sided analysis tests positive effects. FWE correction applies separately
+to each contrast and its fitted search mask, not jointly across contrasts.
+Output maps retain surviving original Z scores for compatibility with existing
+plots and cluster tables. RFT sidecars record the T and equivalent Z thresholds,
+resels, smoothness diagnostics, mask geometry, backend version, and residual
+preparation. Reports display the computed cutoff.
+
+`cluster_threshold` optionally removes small surviving clusters after height
+correction. This is a descriptive extent filter, **not cluster-level RFT
+inference**. Set it to zero to retain every voxel passing the height threshold.
+Spatially smooth fields and the RFT model assumptions are required; software
+integration checks do not establish empirical FWE control. Scientific calibration
+remains pending. SPM comparisons are maintained separately in
+[pyrft-spm-validation](https://github.com/arovai/pyrft-spm-validation).
+
+For some very small residual degrees of freedom, the backend cannot bracket a
+finite high-threshold solution. Such analyses fail explicitly; StatCraft does
+not substitute a different correction or silently omit the requested RFT output.

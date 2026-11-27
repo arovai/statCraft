@@ -37,6 +37,8 @@ class SecondLevelGLM:
         Brain mask for analysis. If None, computed from data.
     smoothing_fwhm : float, optional
         Smoothing kernel FWHM in mm. If None, no smoothing.
+    retain_residuals : bool
+        Retain fitted residuals for RFT; requires the optional backend.
     
     Attributes
     ----------
@@ -50,7 +52,12 @@ class SecondLevelGLM:
         self,
         mask: Optional[Union[str, Path, nib.Nifti1Image]] = None,
         smoothing_fwhm: Optional[float] = None,
+        retain_residuals: bool = False,
     ):
+        if retain_residuals:
+            from statcraft.core.rft import require_pyrft
+            require_pyrft()
+        self.retain_residuals = retain_residuals
         self.mask = mask
         self.smoothing_fwhm = smoothing_fwhm
         self.model: Optional[SecondLevelModel] = None
@@ -201,6 +208,7 @@ class SecondLevelGLM:
         
         # Create and fit model (without target_affine - we've already handled resampling)
         self.model = SecondLevelModel(
+            minimize_memory=not self.retain_residuals,
             mask_img=self.mask,
             smoothing_fwhm=self.smoothing_fwhm,
         )
@@ -270,6 +278,8 @@ class SecondLevelGLM:
                 )
                 results[otype] = stat_map
             except Exception as e:
+                if self.retain_residuals and otype in ("stat", "z_score"):
+                    raise ValueError(f"RFT requires a valid {otype} map") from e
                 logger.warning(f"Could not compute {otype}: {e}")
 
         # Ensure we have at least the stat map

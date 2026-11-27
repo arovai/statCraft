@@ -641,6 +641,7 @@ class StatCraftPipeline:
             smoothing_fwhm = self.config.get("glm", {}).get("smoothing_fwhm", 0)
 
         self.glm = SecondLevelGLM(
+            retain_residuals="rft" in self.config.get("inference.corrections", []),
             mask=mask,
             smoothing_fwhm=smoothing_fwhm,
         )
@@ -760,6 +761,11 @@ class StatCraftPipeline:
         
         corrections = inf_config.get("corrections", ["uncorrected", "fdr", "bonferroni"])
         
+        rft_context = None
+        if "rft" in corrections:
+            from statcraft.core.rft import prepare_context
+            rft_context = prepare_context(self.glm.model)
+
         # Run inference for each contrast
         for contrast_name, result in self.glm.results.items():
             # Use z_score for thresholding (required by nilearn.glm.threshold_stats_img)
@@ -769,6 +775,9 @@ class StatCraftPipeline:
             else:
                 logger.warning(f"z_score not available for {contrast_name}, using stat map (not recommended)")
                 z_map = result["maps"]["stat"]
+
+            if "rft" in corrections:
+                self.inference.threshold_rft(result, rft_context, contrast_name)
 
             # Standard corrections
             if "uncorrected" in corrections:
@@ -1148,6 +1157,15 @@ class StatCraftPipeline:
                             "Controls family-wise error rate with very conservative threshold. "
                             "Only voxels passing stringent correction for multiple comparisons are shown."
                         )
+                    elif correction == "rft":
+                        info = self.inference.rft_metadata[contrast_name]
+                        thresh_caption = (
+                            f"Voxel-level RFT FWE correction, alpha={info['alpha']}; "
+                            f"T threshold={info['threshold']:.4g}, "
+                            f"equivalent Z threshold={info['z_threshold']:.4g}. "
+                            "Smoothness estimated from fitted group-model residuals. "
+                            "Minimum cluster size is a descriptive extent filter, not cluster-level inference."
+                        )
                     elif correction == "fwer_perm":
                         thresh_caption = (
                             f"Thresholded z-score map showing voxels surviving permutation-based FWER correction (p < {inf_config.get('alpha_corrected', 0.05)}). "
@@ -1170,7 +1188,8 @@ class StatCraftPipeline:
                     fig_key, vmin, vmax = self.report._plot_glass_brain(
                         thresh_map,
                         title=f"{contrast_name} ({correction.upper()}) - Glass Brain",
-                        threshold=1.96,
+                        threshold=(self.inference.threshold_values[contrast_name]["rft"]
+                                   if correction == "rft" else 1.96),
                     )
                     self.report.add_section(
                         "Glass Brain",
@@ -1184,7 +1203,8 @@ class StatCraftPipeline:
                     fig_key = self.report._plot_axial_slices(
                         thresh_map,
                         title=f"{contrast_name} ({correction.upper()}) - Axial Slices",
-                        threshold=1.96,
+                        threshold=(self.inference.threshold_values[contrast_name]["rft"]
+                                   if correction == "rft" else 1.96),
                         vmin=vmin,
                         vmax=vmax,
                     )
@@ -1532,6 +1552,10 @@ class StatCraftPipeline:
         metadata["AlphaCorrected"] = inf_config.get("alpha_corrected", 0.05)
         metadata["AlphaUncorrected"] = inf_config.get("alpha_uncorrected", 0.001)
         metadata["ClusterThreshold"] = inf_config.get("cluster_threshold", 10)
+
+        if threshold_type == "rft":
+            metadata["StatisticType"] = "Z"
+            metadata["RFT"] = self.inference.rft_metadata[contrast_name]
 
         import json
         with open(json_path, 'w') as f:
@@ -2157,7 +2181,7 @@ class StatCraftPipeline:
                     threshold_value = None
                     if correction == "uncorrected":
                         threshold_value = self.inference.alpha_uncorrected
-                    elif correction in ["fdr", "bonferroni"]:
+                    elif correction in ["fdr", "bonferroni", "rft"]:
                         threshold_value = self.inference.alpha_corrected
                     elif correction == "fwer_perm":
                         threshold_value = self.inference.alpha_corrected
@@ -3428,7 +3452,9 @@ class StatCraftPipeline:
         # Run one-sample t-test
         # Get smoothing_fwhm from config
         smoothing_fwhm = self.config.get("glm", {}).get("smoothing_fwhm", 0)
-        self.glm = SecondLevelGLM(mask=self._inference_mask, smoothing_fwhm=smoothing_fwhm)
+        self.glm = SecondLevelGLM(
+            retain_residuals="rft" in self.config.get("inference.corrections", []),
+            mask=self._inference_mask, smoothing_fwhm=smoothing_fwhm)
         results = self.glm.one_sample_ttest(diff_images, contrast_name=contrast_name)
 
         # Store input images (difference images) for saving to data/ folder
@@ -3720,7 +3746,9 @@ class StatCraftPipeline:
         # Perform one-sample t-test on the combined images
         logger.info("Performing one-sample t-test on combined images...")
         smoothing_fwhm = self.config.get("glm", {}).get("smoothing_fwhm", 0)
-        self.glm = SecondLevelGLM(mask=self._inference_mask, smoothing_fwhm=smoothing_fwhm)
+        self.glm = SecondLevelGLM(
+            retain_residuals="rft" in self.config.get("inference.corrections", []),
+            mask=self._inference_mask, smoothing_fwhm=smoothing_fwhm)
         self.glm.one_sample_ttest(combined_images, contrast_name=contrast_name)
 
         # Build a simple design matrix for reporting
@@ -3904,6 +3932,7 @@ class StatCraftPipeline:
         # Get smoothing_fwhm from config
         smoothing_fwhm = self.config.get("glm", {}).get("smoothing_fwhm", 0)
         self.glm = SecondLevelGLM(
+            retain_residuals="rft" in self.config.get("inference.corrections", []),
             mask=self._build_inference_mask(valid_images), smoothing_fwhm=smoothing_fwhm)
         self.glm.fit(self._image_paths, self._design_matrix)
 
@@ -4224,6 +4253,10 @@ class StatCraftPipeline:
         dict
             Dictionary with all results.
         """
+        if "rft" in (self.config.get("inference.corrections", []) +
+                     self.config.get("corrections", [])):
+            raise ValueError("RFT correction is available only for volumetric maps, not connectivity matrices or tables")
+
         logger.info("Starting connectivity analysis pipeline...")
 
         analysis_type = self.config.get("analysis_type", "one-sample")
